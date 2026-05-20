@@ -13,6 +13,7 @@ app = FastAPI(title="Miruro API", version="2.0")
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "").split(",")
 API_KEY_NAME = "x-api-key"
 VALID_API_KEY = os.getenv("API_KEY")
+API_DEBUG = os.getenv("API_DEBUG", "False").lower() == "true"
 
 app.add_middleware(
     CORSMiddleware,
@@ -275,244 +276,284 @@ async def _anilist_query(query: str, variables: dict = None):
 
 @app.get("/", response_class=HTMLResponse)
 async def home():
-    return """<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Miruro API v2.0</title>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;500;700&display=swap" rel="stylesheet">
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Outfit', sans-serif; transition: all 0.3s ease; }
-        body { background: radial-gradient(circle at top, #0f172a, #020617); color: #e2e8f0; min-height: 100vh; padding: 50px 20px; }
-        .container { max-width: 960px; margin: 0 auto; background: rgba(30, 41, 59, 0.5); backdrop-filter: blur(10px); padding: 40px; border-radius: 24px; border: 1px solid rgba(255, 255, 255, 0.05); box-shadow: 0 20px 40px rgba(0,0,0,0.5); }
-        .header { text-align: center; margin-bottom: 50px; }
-        .logo { width: 120px; border-radius: 20px; box-shadow: 0 0 30px rgba(56, 189, 248, 0.3); border: 1px solid rgba(255,255,255,0.1); margin-bottom: 25px; object-fit: cover; }
-        h1 { font-size: 3em; font-weight: 700; background: linear-gradient(to right, #38bdf8, #818cf8); -webkit-background-clip: text; color: transparent; margin-bottom: 10px; }
-        .subtitle { color: #94a3b8; font-size: 1.1em; font-weight: 300; }
-        .version { display: inline-block; background: rgba(56, 189, 248, 0.15); color: #38bdf8; padding: 4px 14px; border-radius: 20px; font-size: 0.85em; margin-top: 10px; border: 1px solid rgba(56, 189, 248, 0.2); }
-        .section-title { font-size: 1.3em; font-weight: 700; color: #818cf8; margin: 35px 0 15px; border-left: 3px solid #818cf8; padding-left: 12px; }
-        .endpoint { background: rgba(15, 23, 42, 0.8); border-left: 4px solid #38bdf8; padding: 25px; margin: 15px 0; border-radius: 0 16px 16px 0; border: 1px solid rgba(255,255,255,0.02); }
-        .endpoint:hover { transform: translateX(5px); box-shadow: 0 10px 20px rgba(0,0,0,0.2); border-left-color: #818cf8; background: rgba(30, 41, 59, 0.9); }
-        .method { color: #10b981; font-weight: 700; background: rgba(16, 185, 129, 0.1); padding: 4px 10px; border-radius: 6px; font-size: 0.9em; margin-right: 10px; }
-        .url { font-family: monospace; color: #cbd5e1; font-size: 1.1em; }
-        .params { margin-top: 10px; font-size: 0.85em; color: #64748b; font-family: monospace; line-height: 1.8; }
-        .params span { color: #a5b4fc; }
-        .example { margin-top: 15px; font-size: 0.95em; color: #64748b; }
-        a { color: #38bdf8; text-decoration: none; word-break: break-all; font-weight: 500; }
-        a:hover { color: #818cf8; text-shadow: 0 0 10px rgba(129, 140, 248, 0.5); }
-        .desc { color: #cbd5e1; font-size: 1em; margin-top: 10px; font-weight: 300; line-height: 1.6; }
-        .badge { display: inline-block; font-size: 0.7em; padding: 2px 8px; border-radius: 6px; margin-left: 8px; font-weight: 500; vertical-align: middle; }
-        .badge-new { background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); }
-        .badge-improved { background: rgba(129, 140, 248, 0.15); color: #818cf8; border: 1px solid rgba(129, 140, 248, 0.3); }
-        .returns { margin-top: 12px; font-size: 0.85em; color: #94a3b8; line-height: 1.6; }
-        .returns b { color: #a5b4fc; font-weight: 500; }
-        pre.snippet { background: #020617; padding: 14px; border-radius: 10px; margin-top: 12px; color: #a5b4fc; font-family: monospace; font-size: 0.82em; border: 1px solid rgba(255,255,255,0.05); overflow-x: auto; line-height: 1.5; }
-        .step-num { display: inline-block; background: rgba(56, 189, 248, 0.15); color: #38bdf8; width: 26px; height: 26px; text-align: center; line-height: 26px; border-radius: 50%; font-size: 0.85em; font-weight: 700; margin-right: 8px; }
-        .note { background: rgba(250, 204, 21, 0.08); border: 1px solid rgba(250, 204, 21, 0.15); border-radius: 10px; padding: 14px 18px; margin-top: 12px; font-size: 0.88em; color: #fbbf24; line-height: 1.5; }
-        .note b { color: #fde68a; }
-        table.param-table { width: 100%; margin-top: 12px; border-collapse: collapse; font-size: 0.85em; }
-        table.param-table th { text-align: left; color: #818cf8; font-weight: 500; padding: 6px 10px; border-bottom: 1px solid rgba(255,255,255,0.08); }
-        table.param-table td { padding: 6px 10px; color: #94a3b8; border-bottom: 1px solid rgba(255,255,255,0.03); }
-        table.param-table td:first-child { color: #a5b4fc; font-family: monospace; white-space: nowrap; }
-        .footer { text-align: center; margin-top: 50px; color: #475569; font-size: 0.9em; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 20px; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <img src="https://www.miruro.to/icon-512x512.png" alt="Logo" class="logo">
-            <h1>Miruro Native API</h1>
-            <div class="subtitle">Decrypted, bypassed, and reverse-engineered anime streaming API</div>
-            <div class="version">v2.0 — Full Data &amp; Pagination</div>
-        </div>
+    if API_DEBUG:
+        return """<!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Miruro API v2.0</title>
+            <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;500;700&display=swap" rel="stylesheet">
+            <style>
+                * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Outfit', sans-serif; transition: all 0.3s ease; }
+                body { background: radial-gradient(circle at top, #0f172a, #020617); color: #e2e8f0; min-height: 100vh; padding: 50px 20px; }
+                .container { max-width: 960px; margin: 0 auto; background: rgba(30, 41, 59, 0.5); backdrop-filter: blur(10px); padding: 40px; border-radius: 24px; border: 1px solid rgba(255, 255, 255, 0.05); box-shadow: 0 20px 40px rgba(0,0,0,0.5); }
+                .header { text-align: center; margin-bottom: 50px; }
+                .logo { width: 120px; border-radius: 20px; box-shadow: 0 0 30px rgba(56, 189, 248, 0.3); border: 1px solid rgba(255,255,255,0.1); margin-bottom: 25px; object-fit: cover; }
+                h1 { font-size: 3em; font-weight: 700; background: linear-gradient(to right, #38bdf8, #818cf8); -webkit-background-clip: text; color: transparent; margin-bottom: 10px; }
+                .subtitle { color: #94a3b8; font-size: 1.1em; font-weight: 300; }
+                .version { display: inline-block; background: rgba(56, 189, 248, 0.15); color: #38bdf8; padding: 4px 14px; border-radius: 20px; font-size: 0.85em; margin-top: 10px; border: 1px solid rgba(56, 189, 248, 0.2); }
+                .section-title { font-size: 1.3em; font-weight: 700; color: #818cf8; margin: 35px 0 15px; border-left: 3px solid #818cf8; padding-left: 12px; }
+                .endpoint { background: rgba(15, 23, 42, 0.8); border-left: 4px solid #38bdf8; padding: 25px; margin: 15px 0; border-radius: 0 16px 16px 0; border: 1px solid rgba(255,255,255,0.02); }
+                .endpoint:hover { transform: translateX(5px); box-shadow: 0 10px 20px rgba(0,0,0,0.2); border-left-color: #818cf8; background: rgba(30, 41, 59, 0.9); }
+                .method { color: #10b981; font-weight: 700; background: rgba(16, 185, 129, 0.1); padding: 4px 10px; border-radius: 6px; font-size: 0.9em; margin-right: 10px; }
+                .url { font-family: monospace; color: #cbd5e1; font-size: 1.1em; }
+                .params { margin-top: 10px; font-size: 0.85em; color: #64748b; font-family: monospace; line-height: 1.8; }
+                .params span { color: #a5b4fc; }
+                .example { margin-top: 15px; font-size: 0.95em; color: #64748b; }
+                a { color: #38bdf8; text-decoration: none; word-break: break-all; font-weight: 500; }
+                a:hover { color: #818cf8; text-shadow: 0 0 10px rgba(129, 140, 248, 0.5); }
+                .desc { color: #cbd5e1; font-size: 1em; margin-top: 10px; font-weight: 300; line-height: 1.6; }
+                .badge { display: inline-block; font-size: 0.7em; padding: 2px 8px; border-radius: 6px; margin-left: 8px; font-weight: 500; vertical-align: middle; }
+                .badge-new { background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); }
+                .badge-improved { background: rgba(129, 140, 248, 0.15); color: #818cf8; border: 1px solid rgba(129, 140, 248, 0.3); }
+                .returns { margin-top: 12px; font-size: 0.85em; color: #94a3b8; line-height: 1.6; }
+                .returns b { color: #a5b4fc; font-weight: 500; }
+                pre.snippet { background: #020617; padding: 14px; border-radius: 10px; margin-top: 12px; color: #a5b4fc; font-family: monospace; font-size: 0.82em; border: 1px solid rgba(255,255,255,0.05); overflow-x: auto; line-height: 1.5; }
+                .step-num { display: inline-block; background: rgba(56, 189, 248, 0.15); color: #38bdf8; width: 26px; height: 26px; text-align: center; line-height: 26px; border-radius: 50%; font-size: 0.85em; font-weight: 700; margin-right: 8px; }
+                .note { background: rgba(250, 204, 21, 0.08); border: 1px solid rgba(250, 204, 21, 0.15); border-radius: 10px; padding: 14px 18px; margin-top: 12px; font-size: 0.88em; color: #fbbf24; line-height: 1.5; }
+                .note b { color: #fde68a; }
+                table.param-table { width: 100%; margin-top: 12px; border-collapse: collapse; font-size: 0.85em; }
+                table.param-table th { text-align: left; color: #818cf8; font-weight: 500; padding: 6px 10px; border-bottom: 1px solid rgba(255,255,255,0.08); }
+                table.param-table td { padding: 6px 10px; color: #94a3b8; border-bottom: 1px solid rgba(255,255,255,0.03); }
+                table.param-table td:first-child { color: #a5b4fc; font-family: monospace; white-space: nowrap; }
+                .footer { text-align: center; margin-top: 50px; color: #475569; font-size: 0.9em; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 20px; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <img src="https://www.miruro.to/icon-512x512.png" alt="Logo" class="logo">
+                    <h1>Miruro Native API</h1>
+                    <div class="subtitle">Decrypted, bypassed, and reverse-engineered anime streaming API</div>
+                    <div class="version">v2.0 — Full Data &amp; Pagination</div>
+                </div>
 
-        <div class="note" style="background: rgba(16, 185, 129, 0.08); border-color: rgba(16, 185, 129, 0.2); color: #10b981;">
-            <b>Global Image Proxying:</b> All images (covers, banners, posters) are now automatically proxied via <code>serveproxy.com</code> to prevent ISP blocking and CORS issues.
-        </div>
+                <div class="note" style="background: rgba(16, 185, 129, 0.08); border-color: rgba(16, 185, 129, 0.2); color: #10b981;">
+                    <b>Global Image Proxying:</b> All images (covers, banners, posters) are now automatically proxied via <code>serveproxy.com</code> to prevent ISP blocking and CORS issues.
+                </div>
 
-        <!-- ───────── SEARCH & DISCOVERY ───────── -->
-        <div class="section-title">🔍 Search &amp; Discovery</div>
+                <!-- ───────── SEARCH & DISCOVERY ───────── -->
+                <div class="section-title">🔍 Search &amp; Discovery</div>
 
-        <div class="endpoint">
-            <div><span class="method">GET</span> <span class="url">/search</span></div>
-            <div class="desc">Search anime by name. Returns full metadata per result — title (romaji / english / native), cover art, banner, genres, studios, scores, airing status, and more.</div>
-            <div class="params">Params: <span>query</span> (required), <span>page</span>=1, <span>per_page</span>=20</div>
-            <div class="returns">Returns: <b>page</b>, <b>perPage</b>, <b>total</b>, <b>hasNextPage</b>, <b>results[]</b> — each with 20+ fields</div>
-            <div class="example">Try: <a target="_blank" href="/search?query=naruto&page=1&per_page=5">/search?query=naruto&page=1&per_page=5</a></div>
-        </div>
+                <div class="endpoint">
+                    <div><span class="method">GET</span> <span class="url">/search</span></div>
+                    <div class="desc">Search anime by name. Returns full metadata per result — title (romaji / english / native), cover art, banner, genres, studios, scores, airing status, and more.</div>
+                    <div class="params">Params: <span>query</span> (required), <span>page</span>=1, <span>per_page</span>=20</div>
+                    <div class="returns">Returns: <b>page</b>, <b>perPage</b>, <b>total</b>, <b>hasNextPage</b>, <b>results[]</b> — each with 20+ fields</div>
+                    <div class="example">Try: <a target="_blank" href="/search?query=naruto&page=1&per_page=5">/search?query=naruto&page=1&per_page=5</a></div>
+                </div>
 
-        <div class="endpoint">
-            <div><span class="method">GET</span> <span class="url">/suggestions</span> <span class="badge badge-new">NEW</span></div>
-            <div class="desc">Lightweight search for autocomplete / dropdown. Returns only the essentials: id, title, poster, format, status, year, and episode count. Max 8 results.</div>
-            <div class="params">Params: <span>query</span> (required)</div>
-            <div class="returns">Returns: <b>suggestions[]</b> — each with: id, title, title_romaji, poster, format, status, year, episodes</div>
-            <div class="example">Try: <a target="_blank" href="/suggestions?query=one piece">/suggestions?query=one piece</a></div>
-        </div>
+                <div class="endpoint">
+                    <div><span class="method">GET</span> <span class="url">/suggestions</span> <span class="badge badge-new">NEW</span></div>
+                    <div class="desc">Lightweight search for autocomplete / dropdown. Returns only the essentials: id, title, poster, format, status, year, and episode count. Max 8 results.</div>
+                    <div class="params">Params: <span>query</span> (required)</div>
+                    <div class="returns">Returns: <b>suggestions[]</b> — each with: id, title, title_romaji, poster, format, status, year, episodes</div>
+                    <div class="example">Try: <a target="_blank" href="/suggestions?query=one piece">/suggestions?query=one piece</a></div>
+                </div>
 
-        <div class="endpoint">
-            <div><span class="method">GET</span> <span class="url">/spotlight</span> <span class="badge badge-new">HOT</span></div>
-            <div class="desc">The ultra-curated "What's Hot" list. Fetches the top 10 anime currently trending and popular across the globe. Perfect for hero banners and home carousels.</div>
-            <div class="example">Try: <a target="_blank" href="/spotlight">/spotlight</a></div>
-        </div>
+                <div class="endpoint">
+                    <div><span class="method">GET</span> <span class="url">/spotlight</span> <span class="badge badge-new">HOT</span></div>
+                    <div class="desc">The ultra-curated "What's Hot" list. Fetches the top 10 anime currently trending and popular across the globe. Perfect for hero banners and home carousels.</div>
+                    <div class="example">Try: <a target="_blank" href="/spotlight">/spotlight</a></div>
+                </div>
 
-        <div class="endpoint">
-            <div><span class="method">GET</span> <span class="url">/filter</span> <span class="badge badge-new">NEW</span></div>
-            <div class="desc">Advanced filter / browse. Combine any filters — all params are optional.</div>
-            <table class="param-table">
-                <tr><th>Param</th><th>Values</th></tr>
-                <tr><td>genre</td><td>Action, Romance, Comedy, Drama, Fantasy, Sci-Fi, etc.</td></tr>
-                <tr><td>tag</td><td>Isekai, Time Skip, Reincarnation, etc.</td></tr>
-                <tr><td>year</td><td>2025, 2024, etc.</td></tr>
-                <tr><td>season</td><td>WINTER · SPRING · SUMMER · FALL</td></tr>
-                <tr><td>format</td><td>TV · MOVIE · OVA · ONA · SPECIAL</td></tr>
-                <tr><td>status</td><td>RELEASING · FINISHED · NOT_YET_RELEASED · CANCELLED</td></tr>
-                <tr><td>sort</td><td>SCORE_DESC · POPULARITY_DESC · TRENDING_DESC · START_DATE_DESC</td></tr>
-                <tr><td>page / per_page</td><td>Pagination (default 1 / 20)</td></tr>
-            </table>
-            <div class="example">Try: <a target="_blank" href="/filter?genre=Action&format=TV&sort=SCORE_DESC&per_page=5">/filter?genre=Action&format=TV&sort=SCORE_DESC&per_page=5</a></div>
-        </div>
+                <div class="endpoint">
+                    <div><span class="method">GET</span> <span class="url">/filter</span> <span class="badge badge-new">NEW</span></div>
+                    <div class="desc">Advanced filter / browse. Combine any filters — all params are optional.</div>
+                    <table class="param-table">
+                        <tr><th>Param</th><th>Values</th></tr>
+                        <tr><td>genre</td><td>Action, Romance, Comedy, Drama, Fantasy, Sci-Fi, etc.</td></tr>
+                        <tr><td>tag</td><td>Isekai, Time Skip, Reincarnation, etc.</td></tr>
+                        <tr><td>year</td><td>2025, 2024, etc.</td></tr>
+                        <tr><td>season</td><td>WINTER · SPRING · SUMMER · FALL</td></tr>
+                        <tr><td>format</td><td>TV · MOVIE · OVA · ONA · SPECIAL</td></tr>
+                        <tr><td>status</td><td>RELEASING · FINISHED · NOT_YET_RELEASED · CANCELLED</td></tr>
+                        <tr><td>sort</td><td>SCORE_DESC · POPULARITY_DESC · TRENDING_DESC · START_DATE_DESC</td></tr>
+                        <tr><td>page / per_page</td><td>Pagination (default 1 / 20)</td></tr>
+                    </table>
+                    <div class="example">Try: <a target="_blank" href="/filter?genre=Action&format=TV&sort=SCORE_DESC&per_page=5">/filter?genre=Action&format=TV&sort=SCORE_DESC&per_page=5</a></div>
+                </div>
 
-        <!-- ───────── COLLECTIONS ───────── -->
-        <div class="section-title">📊 Collections (Paginated)</div>
+                <!-- ───────── COLLECTIONS ───────── -->
+                <div class="section-title">📊 Collections (Paginated)</div>
 
-        <div class="endpoint">
-            <div><span class="method">GET</span> <span class="url">/trending</span></div>
-            <div class="desc">Currently trending anime across the community.</div>
-            <div class="params">Params: <span>page</span>=1, <span>per_page</span>=20</div>
-            <div class="example">Try: <a target="_blank" href="/trending?per_page=5">/trending?per_page=5</a></div>
-        </div>
+                <div class="endpoint">
+                    <div><span class="method">GET</span> <span class="url">/trending</span></div>
+                    <div class="desc">Currently trending anime across the community.</div>
+                    <div class="params">Params: <span>page</span>=1, <span>per_page</span>=20</div>
+                    <div class="example">Try: <a target="_blank" href="/trending?per_page=5">/trending?per_page=5</a></div>
+                </div>
 
-        <div class="endpoint">
-            <div><span class="method">GET</span> <span class="url">/popular</span></div>
-            <div class="desc">Most popular anime of all time by total user count.</div>
-            <div class="params">Params: <span>page</span>=1, <span>per_page</span>=20</div>
-            <div class="example">Try: <a target="_blank" href="/popular">/popular</a></div>
-        </div>
+                <div class="endpoint">
+                    <div><span class="method">GET</span> <span class="url">/popular</span></div>
+                    <div class="desc">Most popular anime of all time by total user count.</div>
+                    <div class="params">Params: <span>page</span>=1, <span>per_page</span>=20</div>
+                    <div class="example">Try: <a target="_blank" href="/popular">/popular</a></div>
+                </div>
 
-        <div class="endpoint">
-            <div><span class="method">GET</span> <span class="url">/upcoming</span></div>
-            <div class="desc">Most anticipated anime that haven't aired yet.</div>
-            <div class="params">Params: <span>page</span>=1, <span>per_page</span>=20</div>
-            <div class="example">Try: <a target="_blank" href="/upcoming">/upcoming</a></div>
-        </div>
+                <div class="endpoint">
+                    <div><span class="method">GET</span> <span class="url">/upcoming</span></div>
+                    <div class="desc">Most anticipated anime that haven't aired yet.</div>
+                    <div class="params">Params: <span>page</span>=1, <span>per_page</span>=20</div>
+                    <div class="example">Try: <a target="_blank" href="/upcoming">/upcoming</a></div>
+                </div>
 
-        <div class="endpoint">
-            <div><span class="method">GET</span> <span class="url">/recent</span></div>
-            <div class="desc">Currently airing / this season's anime.</div>
-            <div class="params">Params: <span>page</span>=1, <span>per_page</span>=20</div>
-            <div class="example">Try: <a target="_blank" href="/recent">/recent</a></div>
-        </div>
+                <div class="endpoint">
+                    <div><span class="method">GET</span> <span class="url">/recent</span></div>
+                    <div class="desc">Currently airing / this season's anime.</div>
+                    <div class="params">Params: <span>page</span>=1, <span>per_page</span>=20</div>
+                    <div class="example">Try: <a target="_blank" href="/recent">/recent</a></div>
+                </div>
 
-        <div class="endpoint">
-            <div><span class="method">GET</span> <span class="url">/schedule</span></div>
-            <div class="desc">Next episodes airing soon. Each result includes the full anime info plus <b>airingAt</b> (UNIX timestamp), <b>timeUntilAiring</b> (seconds), and <b>next_episode</b> (episode number).</div>
-            <div class="params">Params: <span>page</span>=1, <span>per_page</span>=20</div>
-            <div class="example">Try: <a target="_blank" href="/schedule">/schedule</a></div>
-        </div>
+                <div class="endpoint">
+                    <div><span class="method">GET</span> <span class="url">/schedule</span></div>
+                    <div class="desc">Next episodes airing soon. Each result includes the full anime info plus <b>airingAt</b> (UNIX timestamp), <b>timeUntilAiring</b> (seconds), and <b>next_episode</b> (episode number).</div>
+                    <div class="params">Params: <span>page</span>=1, <span>per_page</span>=20</div>
+                    <div class="example">Try: <a target="_blank" href="/schedule">/schedule</a></div>
+                </div>
 
-        <!-- ───────── ANIME DETAILS ───────── -->
-        <div class="section-title">📖 Anime Details</div>
+                <!-- ───────── ANIME DETAILS ───────── -->
+                <div class="section-title">📖 Anime Details</div>
 
-        <div class="endpoint">
-            <div><span class="method">GET</span> <span class="url">/info/{anilist_id}</span></div>
-            <div class="desc">Complete anime page — <b>everything</b> you need to build an anime detail page in one request.</div>
-            <div class="returns">Returns all of: title (romaji/english/native), description, coverImage, bannerImage, format, season, seasonYear, episodes, duration, status, averageScore, meanScore, popularity, favourites, genres, <b>tags</b> (with rank), <b>studios</b>, <b>characters</b> (25, with voice actors), <b>staff</b> (25, with roles), <b>relations</b> (sequels/prequels/etc.), <b>recommendations</b> (10), <b>trailer</b>, <b>externalLinks</b> (MAL, official site), <b>streamingEpisodes</b>, <b>stats</b> (score &amp; status distribution), synonyms, siteUrl, idMal, and more.</div>
-            <div class="example">Try: <a target="_blank" href="/info/20">/info/20</a> (Naruto) · <a target="_blank" href="/info/21">/info/21</a> (One Piece)</div>
-        </div>
+                <div class="endpoint">
+                    <div><span class="method">GET</span> <span class="url">/info/{anilist_id}</span></div>
+                    <div class="desc">Complete anime page — <b>everything</b> you need to build an anime detail page in one request.</div>
+                    <div class="returns">Returns all of: title (romaji/english/native), description, coverImage, bannerImage, format, season, seasonYear, episodes, duration, status, averageScore, meanScore, popularity, favourites, genres, <b>tags</b> (with rank), <b>studios</b>, <b>characters</b> (25, with voice actors), <b>staff</b> (25, with roles), <b>relations</b> (sequels/prequels/etc.), <b>recommendations</b> (10), <b>trailer</b>, <b>externalLinks</b> (MAL, official site), <b>streamingEpisodes</b>, <b>stats</b> (score &amp; status distribution), synonyms, siteUrl, idMal, and more.</div>
+                    <div class="example">Try: <a target="_blank" href="/info/20">/info/20</a> (Naruto) · <a target="_blank" href="/info/21">/info/21</a> (One Piece)</div>
+                </div>
 
-        <div class="endpoint">
-            <div><span class="method">GET</span> <span class="url">/anime/{id}/characters</span></div>
-            <div class="desc">Paginated character list. Each character includes name, image, role (MAIN/SUPPORTING), and Japanese voice actors with images.</div>
-            <div class="params">Params: <span>page</span>=1, <span>per_page</span>=25</div>
-            <div class="example">Try: <a target="_blank" href="/anime/20/characters">/anime/20/characters</a></div>
-        </div>
+                <div class="endpoint">
+                    <div><span class="method">GET</span> <span class="url">/anime/{id}/characters</span></div>
+                    <div class="desc">Paginated character list. Each character includes name, image, role (MAIN/SUPPORTING), and Japanese voice actors with images.</div>
+                    <div class="params">Params: <span>page</span>=1, <span>per_page</span>=25</div>
+                    <div class="example">Try: <a target="_blank" href="/anime/20/characters">/anime/20/characters</a></div>
+                </div>
 
-        <div class="endpoint">
-            <div><span class="method">GET</span> <span class="url">/anime/{id}/relations</span></div>
-            <div class="desc">All related media — sequels, prequels, side stories, spin-offs, source material. Each entry has type (SEQUEL/PREQUEL/etc.), format, and basic metadata.</div>
-            <div class="example">Try: <a target="_blank" href="/anime/20/relations">/anime/20/relations</a></div>
-        </div>
+                <div class="endpoint">
+                    <div><span class="method">GET</span> <span class="url">/anime/{id}/relations</span></div>
+                    <div class="desc">All related media — sequels, prequels, side stories, spin-offs, source material. Each entry has type (SEQUEL/PREQUEL/etc.), format, and basic metadata.</div>
+                    <div class="example">Try: <a target="_blank" href="/anime/20/relations">/anime/20/relations</a></div>
+                </div>
 
-        <div class="endpoint">
-            <div><span class="method">GET</span> <span class="url">/anime/{id}/recommendations</span></div>
-            <div class="desc">Community recommendations — "if you liked X, you'll like Y". Sorted by highest rating.</div>
-            <div class="params">Params: <span>page</span>=1, <span>per_page</span>=10</div>
-            <div class="example">Try: <a target="_blank" href="/anime/20/recommendations">/anime/20/recommendations</a></div>
-        </div>
+                <div class="endpoint">
+                    <div><span class="method">GET</span> <span class="url">/anime/{id}/recommendations</span></div>
+                    <div class="desc">Community recommendations — "if you liked X, you'll like Y". Sorted by highest rating.</div>
+                    <div class="params">Params: <span>page</span>=1, <span>per_page</span>=10</div>
+                    <div class="example">Try: <a target="_blank" href="/anime/20/recommendations">/anime/20/recommendations</a></div>
+                </div>
 
-        <!-- ───────── STREAMING ───────── -->
-        <div class="section-title">▶️ Streaming (3-Step Flow)</div>
+                <!-- ───────── STREAMING ───────── -->
+                <div class="section-title">▶️ Streaming (3-Step Flow)</div>
 
-        <div class="note">
-            <b>How streaming works:</b> To get a video URL, follow these 3 steps in order. Each step's output feeds into the next.
-        </div>
+                <div class="note">
+                    <b>How streaming works:</b> To get a video URL, follow these 3 steps in order. Each step's output feeds into the next.
+                </div>
 
-        <div class="endpoint">
-            <div><span class="step-num">1</span><span class="method">GET</span> <span class="url">/episodes/{anilist_id}</span></div>
-            <div class="desc">Get all available episodes for an anime. Returns episodes from multiple providers (kiwi, arc, zoro, jet, etc.) organized by audio type (sub / dub).</div>
-            <div class="returns">Returns: <b>mappings</b> (cross-reference IDs for AniList, MAL, Kitsu) + <b>providers</b> (episode lists per provider)</div>
-            <pre class="snippet">{
-  "mappings": { "anilistId": 178005, "malId": 56885, ... },
-  "providers": {
-    "kiwi": {
-      "episodes": {
-        "sub": [
-          {
-            "id": "watch/kiwi/178005/sub/animepahe-1",   ← use this strictly
-            "number": 1,
-            "title": "Episode Title",
-            "image": "https://...",
-            "airDate": "2026-01-04",
-            "duration": 1420,
-            "description": "...",
-            "filler": false
-          }
+                <div class="endpoint">
+                    <div><span class="step-num">1</span><span class="method">GET</span> <span class="url">/episodes/{anilist_id}</span></div>
+                    <div class="desc">Get all available episodes for an anime. Returns episodes from multiple providers (kiwi, arc, zoro, jet, etc.) organized by audio type (sub / dub).</div>
+                    <div class="returns">Returns: <b>mappings</b> (cross-reference IDs for AniList, MAL, Kitsu) + <b>providers</b> (episode lists per provider)</div>
+                    <pre class="snippet">{
+        "mappings": { "anilistId": 178005, "malId": 56885, ... },
+        "providers": {
+            "kiwi": {
+            "episodes": {
+                "sub": [
+                {
+                    "id": "watch/kiwi/178005/sub/animepahe-1",   ← use this strictly
+                    "number": 1,
+                    "title": "Episode Title",
+                    "image": "https://...",
+                    "airDate": "2026-01-04",
+                    "duration": 1420,
+                    "description": "...",
+                    "filler": false
+                }
+                ],
+                "dub": [ ... ]
+            }
+            },
+            "arc": { ... },
+            "zoro": { ... }
+        }
+        }</pre>
+                    <div class="example">Try: <a target="_blank" href="/episodes/178005">/episodes/178005</a></div>
+                </div>
+
+                <div class="endpoint" style="border-left-color: #10b981; background: rgba(16, 185, 129, 0.05);">
+                    <div><span class="step-num">2</span> <span class="url">/watch/{provider}/{anilistId}/{category}/{slug}</span> <span class="badge badge-new">RECOMMENDED</span></div>
+                    <div class="desc">The super simple way to get sources. Just take the direct <b>id</b> from the Step 1 response and use it as the URL. No manual parameters needed!</div>
+                    <div class="example">Try: <a target="_blank" href="/watch/kiwi/178005/sub/animepahe-1">/watch/kiwi/178005/sub/animepahe-1</a></div>
+                    
+                    <pre class="snippet">{
+        "streams": [
+            { "url": "https://.../master.m3u8", "type": "hls", "quality": "1080p" }
         ],
-        "dub": [ ... ]
-      }
-    },
-    "arc": { ... },
-    "zoro": { ... }
-  }
-}</pre>
-            <div class="example">Try: <a target="_blank" href="/episodes/178005">/episodes/178005</a></div>
-        </div>
+        "subtitles": [ { "file": "...", "label": "English" } ],
+        "intro": { "start": 0, "end": 90 },
+        "outro": { "start": 1300, "end": 1420 }
+        }</pre>
 
-        <div class="endpoint" style="border-left-color: #10b981; background: rgba(16, 185, 129, 0.05);">
-            <div><span class="step-num">2</span> <span class="url">/watch/{provider}/{anilistId}/{category}/{slug}</span> <span class="badge badge-new">RECOMMENDED</span></div>
-            <div class="desc">The super simple way to get sources. Just take the direct <b>id</b> from the Step 1 response and use it as the URL. No manual parameters needed!</div>
-            <div class="example">Try: <a target="_blank" href="/watch/kiwi/178005/sub/animepahe-1">/watch/kiwi/178005/sub/animepahe-1</a></div>
-            
-            <pre class="snippet">{
-  "streams": [
-    { "url": "https://.../master.m3u8", "type": "hls", "quality": "1080p" }
-  ],
-  "subtitles": [ { "file": "...", "label": "English" } ],
-  "intro": { "start": 0, "end": 90 },
-  "outro": { "start": 1300, "end": 1420 }
-}</pre>
+                    <div style="margin-top: 20px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 15px;">
+                        <span style="font-size: 0.85em; color: #64748b; font-weight: 500;">DETAILED OPTION:</span>
+                        <div class="desc" style="font-size: 0.9em; opacity: 0.7;"><code>GET /sources?episodeId=...&provider=...&anilistId=...&category=...</code></div>
+                    </div>
+                </div>
 
-            <div style="margin-top: 20px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 15px;">
-                <span style="font-size: 0.85em; color: #64748b; font-weight: 500;">DETAILED OPTION:</span>
-                <div class="desc" style="font-size: 0.9em; opacity: 0.7;"><code>GET /sources?episodeId=...&provider=...&anilistId=...&category=...</code></div>
+                <div class="endpoint" style="border-left-color: #818cf8;">
+                    <div><span class="step-num">3</span> <span class="url" style="color: #818cf8;">Play the stream</span></div>
+                    <div class="desc">Take the <b>streams[0].url</b> from Step 2 and feed it into any HLS-compatible player (Video.js, hls.js, VLC, mpv, etc.). Subtitles are either hard-subbed (kiwi/pahe) or provided in the <b>subtitles</b> array (zoro/arc). Use <b>intro/outro</b> timestamps for skip buttons.</div>
+                </div>
+
+                <div class="footer">
+                    All collection endpoints return paginated responses: <span style="color: #a5b4fc; font-family: monospace;">{ page, perPage, total, hasNextPage, results[] }</span>
+                    <br><br>
+                    Developed by Walter | <a href="https://github.com/walterwhite-69" target="_blank">github.com/walterwhite-69</a>
+                </div>
             </div>
-        </div>
-
-        <div class="endpoint" style="border-left-color: #818cf8;">
-            <div><span class="step-num">3</span> <span class="url" style="color: #818cf8;">Play the stream</span></div>
-            <div class="desc">Take the <b>streams[0].url</b> from Step 2 and feed it into any HLS-compatible player (Video.js, hls.js, VLC, mpv, etc.). Subtitles are either hard-subbed (kiwi/pahe) or provided in the <b>subtitles</b> array (zoro/arc). Use <b>intro/outro</b> timestamps for skip buttons.</div>
-        </div>
-
-        <div class="footer">
-            All collection endpoints return paginated responses: <span style="color: #a5b4fc; font-family: monospace;">{ page, perPage, total, hasNextPage, results[] }</span>
-            <br><br>
-            Developed by Walter | <a href="https://github.com/walterwhite-69" target="_blank">github.com/walterwhite-69</a>
-        </div>
-    </div>
-</body>
-</html>"""
-
+        </body>
+        </html>"""
+    else:
+        return """
+        <!DOCTYPE html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>ANIME CAST - SCRAPER MIRURO - CSC LAB</title>
+                <style>
+                    body {
+                        display: flex;
+                        justify-content: center;
+                        align-items: center;
+                        height: 100vh;
+                        margin: 0;
+                        font-family: Arial, sans-serif;
+                        background-color: #333;
+                        text-align: center;
+                    }
+                    h1 {
+                        color: #f0f0f0;
+                    }
+                </style>
+                <!-- ICONS -->
+                <link rel="apple-touch-icon" sizes="180x180" href="https://animecast.xyz/iconos/apple-touch-icon.png">
+                <link rel="icon" type="image/png" sizes="32x32" href="https://animecast.xyz/iconos/favicon-32x32.png">
+                <link rel="icon" type="image/png" sizes="16x16" href="https://animecast.xyz/iconos/favicon-16x16.png">
+                <link rel="manifest" href="https://animecast.xyz/iconos/site.webmanifest">
+                <link rel="mask-icon" href="https://animecast.xyz/iconos/safari-pinned-tab.svg" color="#393a3c">
+                <link rel="shortcut icon" href="https://animecast.xyz/iconos/favicon.ico">
+                <meta name="msapplication-TileColor" content="#393a3c">
+                <meta name="msapplication-TileImage" content="https://animecast.xyz/iconos/mstile-144x144.png">
+                <meta name="msapplication-config" content="https://animecast.xyz/iconos/browserconfig.xml">
+                <meta name="theme-color" content="#393a3c">
+            </head>
+            <body>
+                <h1>ANIME CAST - SCRAPER MIRURO<br><br>CSC LAB</h1>
+            </body>
+        </html>
+        """
 
 # ─── Search & Suggestions ───────────────────────────────────────────────────
 
