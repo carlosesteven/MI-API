@@ -109,6 +109,23 @@ async def _fetch_raw_episodes(anilist_id: int) -> dict:
         _deep_translate(data)
         return data
 
+async def _fetch_raw_recents() -> dict:
+    """Internal helper to fetch raw, decoded episode data from Miruro pipe."""
+    payload = {
+        "path": "schedule",
+        "method": "GET",
+        "query": {"sort":["TIME_DESC"],"newest":True},
+        "body": None,
+    }
+    encoded_req = _encode_pipe_request(payload)
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        res = await client.get(f"{MIRURO_PIPE_URL}?e={encoded_req}", headers=HEADERS)
+        if res.status_code != 200:
+            raise HTTPException(status_code=res.status_code, detail="Pipe request failed")
+        data = _decode_pipe_response(res.text.strip())
+        _deep_translate(data)
+        return data
+
 # ─── Shared GraphQL Fragments ────────────────────────────────────────────────
 
 MEDIA_LIST_FIELDS = """
@@ -788,6 +805,11 @@ async def get_recent(
     """Get currently airing anime with full metadata and pagination."""
     return await _fetch_collection("START_DATE_DESC", "RELEASING", page=page, per_page=per_page)
 
+@app.get("/recent-episodes")
+async def get_recent_episodes():
+    """Get currently airing anime with full metadata and pagination."""
+    recents = await _fetch_raw_recents()
+    return _proxy_deep_images(recents)
 
 @app.get("/schedule")
 async def get_schedule(
