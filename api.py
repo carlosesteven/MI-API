@@ -1,4 +1,5 @@
 import base64, json, gzip, httpx, os
+import redis.asyncio as aioredis
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,6 +15,19 @@ ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "").split(",")
 API_KEY_NAME = "x-api-key"
 VALID_API_KEY = os.getenv("API_KEY")
 API_DEBUG = os.getenv("API_DEBUG", "False").lower() == "true"
+
+# --- Redis Cache Configuration ---
+CACHE_RECENT_EPISODES_HOURS = int(os.getenv("CACHE_RECENT_EPISODES_HOURS", "2"))
+CACHE_RECENT_EPISODES_TTL = CACHE_RECENT_EPISODES_HOURS * 3600  # seconds
+
+REDIS_KEY_RECENT_EPISODES = "miruro_api:cache:recent_episodes"
+
+redis_client = aioredis.Redis(
+    host=os.getenv("REDIS_HOST", "localhost"),
+    port=int(os.getenv("REDIS_PORT", "6379")),
+    password=os.getenv("REDIS_PASSWORD") or None,
+    decode_responses=True,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -808,8 +822,22 @@ async def get_recent(
 @app.get("/recent-episodes")
 async def get_recent_episodes():
     """Get currently airing anime with full metadata and pagination."""
+    try:
+        cached = await redis_client.get(REDIS_KEY_RECENT_EPISODES)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+
     recents = await _fetch_raw_recents()
-    return _proxy_deep_images(recents)
+    result = _proxy_deep_images(recents)
+
+    try:
+        await redis_client.setex(REDIS_KEY_RECENT_EPISODES, CACHE_RECENT_EPISODES_TTL, json.dumps(result))
+    except Exception:
+        pass
+
+    return result
 
 @app.get("/schedule")
 async def get_schedule(

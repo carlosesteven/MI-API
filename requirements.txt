@@ -3,3 +3,4 @@ httpx
 uvicorn
 mangum
 python-dotenv
+redis
