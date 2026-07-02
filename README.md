@@ -1,6 +1,6 @@
-# Miruro API
+# MI API
 
-FastAPI proxy over AniList GraphQL and the Miruro pipe. Returns anime metadata, episode lists, and streaming sources.
+FastAPI proxy over AniList GraphQL and the MI pipe. Returns anime metadata, episode lists, and streaming sources.
 
 ---
 
@@ -30,15 +30,15 @@ REDIS_PASSWORD=your_redis_password
 CACHE_RECENT_EPISODES_HOURS=2
 ```
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `ALLOWED_ORIGINS` | — | Comma-separated CORS + auth whitelist |
-| `API_KEY` | — | Auth header value (`x-api-key`) |
-| `API_DEBUG` | `False` | `True` renders full HTML docs at `/` |
-| `REDIS_HOST` | `localhost` | Redis host for caching |
-| `REDIS_PORT` | `6379` | Redis port |
-| `REDIS_PASSWORD` | — | Redis password |
-| `CACHE_RECENT_EPISODES_HOURS` | `2` | TTL for `/recent-episodes` cache |
+| Variable                      | Default     | Purpose                               |
+| ----------------------------- | ----------- | ------------------------------------- |
+| `ALLOWED_ORIGINS`             | —           | Comma-separated CORS + auth whitelist |
+| `API_KEY`                     | —           | Auth header value (`x-api-key`)       |
+| `API_DEBUG`                   | `False`     | `True` renders full HTML docs at `/`  |
+| `REDIS_HOST`                  | `localhost` | Redis host for caching                |
+| `REDIS_PORT`                  | `6379`      | Redis port                            |
+| `REDIS_PASSWORD`              | —           | Redis password                        |
+| `CACHE_RECENT_EPISODES_HOURS` | `2`         | TTL for `/recent-episodes` cache      |
 
 ### Run locally
 
@@ -83,15 +83,6 @@ nohup python -m uvicorn api:app --host 0.0.0.0 --port 8848 > /dev/null 2>&1 &
 ```
 
 > **Important:** always kill by PID (`kill <PID>`), not by name (`pkill`). The server may be running multiple uvicorn processes on different ports.
-
-### Docker
-
-```bash
-docker build -t miruro-api .
-docker run -p 8000:8000 miruro-api
-```
-
----
 
 ## Disclaimer
 
