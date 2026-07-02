@@ -1,4 +1,5 @@
 import base64, json, gzip, httpx, os
+from curl_cffi.requests import AsyncSession as CurlSession
 import redis.asyncio as aioredis
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -27,6 +28,8 @@ redis_client = aioredis.Redis(
     port=int(os.getenv("REDIS_PORT", "6379")),
     password=os.getenv("REDIS_PASSWORD") or None,
     decode_responses=True,
+    socket_connect_timeout=3,
+    socket_timeout=3,
 )
 
 app.add_middleware(
@@ -66,9 +69,22 @@ async def secure_api(request: Request, call_next):
 
     return await call_next(request)
 
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Referer": "https://www.miruro.tv/"}
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
+    "Referer": "https://www.miruro.to/",
+    "accept": "*/*",
+    "accept-language": "en-US,en;q=0.9",
+    "cache-control": "no-cache",
+    "pragma": "no-cache",
+    "sec-ch-ua": '"Google Chrome";v="149", "Chromium";v="149", "Not)A;Brand";v="24"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"macOS"',
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "same-origin",
+}
 ANILIST_URL = "https://graphql.anilist.co"
-MIRURO_PIPE_URL = "https://www.miruro.tv/api/secure/pipe"
+MIRURO_PIPE_URL = "https://www.miruro.to/api/secure/pipe"
 
 def _proxy_img(url: str) -> str:
     # Proxy removed — return original image URL
@@ -115,7 +131,7 @@ async def _fetch_raw_episodes(anilist_id: int) -> dict:
         "version": "0.1.0",
     }
     encoded_req = _encode_pipe_request(payload)
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    async with CurlSession(impersonate="chrome110") as client:
         res = await client.get(f"{MIRURO_PIPE_URL}?e={encoded_req}", headers=HEADERS)
         if res.status_code != 200:
             raise HTTPException(status_code=res.status_code, detail="Pipe request failed")
@@ -132,7 +148,7 @@ async def _fetch_raw_recents() -> dict:
         "body": None,
     }
     encoded_req = _encode_pipe_request(payload)
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    async with CurlSession(impersonate="chrome110") as client:
         res = await client.get(f"{MIRURO_PIPE_URL}?e={encoded_req}", headers=HEADERS)
         if res.status_code != 200:
             raise HTTPException(status_code=res.status_code, detail="Pipe request failed")
@@ -1078,7 +1094,7 @@ async def get_sources(
         "version": "0.1.0",
     }
     encoded_req = _encode_pipe_request(payload)
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    async with CurlSession(impersonate="chrome110") as client:
         res = await client.get(f"{MIRURO_PIPE_URL}?e={encoded_req}", headers=HEADERS)
         if res.status_code != 200:
             raise HTTPException(status_code=res.status_code, detail="Pipe request failed")

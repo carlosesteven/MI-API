@@ -1,5 +1,6 @@
 fastapi
 httpx
+curl_cffi
 uvicorn
 mangum
 python-dotenv
