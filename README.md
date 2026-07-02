@@ -16,29 +16,27 @@ pip install -r requirements.txt
 
 ### Environment variables
 
-Create a `.env` file in the project root:
+Copy `.env_example` to `.env` and fill in your values:
 
-```env
-ALLOWED_ORIGINS=http://localhost:3000,https://yourdomain.com
-API_KEY=your_secret_key
-API_DEBUG=False
-
-# Redis cache (optional — API works without it)
-REDIS_HOST=your_redis_host
-REDIS_PORT=6379
-REDIS_PASSWORD=your_redis_password
-CACHE_RECENT_EPISODES_HOURS=2
+```bash
+cp .env_example .env
 ```
 
-| Variable                      | Default     | Purpose                               |
-| ----------------------------- | ----------- | ------------------------------------- |
-| `ALLOWED_ORIGINS`             | —           | Comma-separated CORS + auth whitelist |
-| `API_KEY`                     | —           | Auth header value (`x-api-key`)       |
-| `API_DEBUG`                   | `False`     | `True` renders full HTML docs at `/`  |
-| `REDIS_HOST`                  | `localhost` | Redis host for caching                |
-| `REDIS_PORT`                  | `6379`      | Redis port                            |
-| `REDIS_PASSWORD`              | —           | Redis password                        |
-| `CACHE_RECENT_EPISODES_HOURS` | `2`         | TTL for `/recent-episodes` cache      |
+| Variable                      | Default                                     | Purpose                                                                                                                       |
+| ----------------------------- | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `ALLOWED_ORIGINS`             | —                                           | Comma-separated CORS + auth whitelist                                                                                         |
+| `API_KEY`                     | —                                           | Auth header value (`x-api-key`)                                                                                               |
+| `API_DEBUG`                   | `False`                                     | `True` renders full HTML docs at `/`                                                                                          |
+| `REDIS_HOST`                  | `localhost`                                 | Redis host for caching                                                                                                        |
+| `REDIS_PORT`                  | `6379`                                      | Redis port                                                                                                                    |
+| `REDIS_PASSWORD`              | —                                           | Redis password                                                                                                                |
+| `CACHE_RECENT_EPISODES_HOURS` | `2`                                         | TTL for `/recent-episodes` cache                                                                                              |
+| `MIRURO_BASE_URL`             | — (required)                                | Base domain for the Miruro pipe, e.g. `https://www.miruro.XX`. Update this if Miruro changes domains                          |
+| `PIPE_IMPERSONATE`            | — (required)                                | `curl_cffi` browser TLS fingerprint to impersonate for Cloudflare bypass, e.g. `chrome1XX`                                    |
+| `PIPE_USER_AGENT`             | `Mozilla/5.0 (Windows NT 10.0; Win64; x64)` | User-Agent sent to the pipe                                                                                                   |
+| `PIPE_EXTRA_HEADERS`          | `{}`                                        | JSON object merged into pipe request headers (e.g. `sec-ch-ua`, `accept`) — used to adapt to Cloudflare without touching code |
+
+> `MIRURO_BASE_URL` and `PIPE_IMPERSONATE` have no code fallback — the server will not start without them set.
 
 ### Run locally
 
