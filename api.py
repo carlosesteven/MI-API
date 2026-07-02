@@ -28,8 +28,11 @@ REDIS_KEY_RECENT_EPISODES = "miruro_api:cache:recent_episodes"
 
 # --- Miruro Pipe Configuration ---
 MIRURO_BASE_URL = os.getenv("MIRURO_BASE_URL").rstrip("/")
+
+# --- Pipe Request Configuration ---
 PIPE_USER_AGENT = os.getenv("PIPE_USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
 PIPE_EXTRA_HEADERS = json.loads(os.getenv("PIPE_EXTRA_HEADERS", "{}"))
+PIPE_IMPERSONATE = os.getenv("PIPE_IMPERSONATE")
 
 # --- Upstream URLs & Headers ---
 HEADERS = {
@@ -49,7 +52,7 @@ redis_client = aioredis.Redis(
     socket_timeout=3,
 )
 
-pipe_session = CurlSession(impersonate="chrome110")
+pipe_session = CurlSession(impersonate=PIPE_IMPERSONATE)
 
 app.add_middleware(
     CORSMiddleware,
@@ -137,7 +140,7 @@ async def _fetch_raw_episodes(anilist_id: int) -> dict:
     try:
         res = await pipe_session.get(f"{MIRURO_PIPE_URL}?e={encoded_req}", headers=HEADERS)
     except Exception:
-        pipe_session = CurlSession(impersonate="chrome110")
+        pipe_session = CurlSession(impersonate=PIPE_IMPERSONATE)
         try:
             res = await pipe_session.get(f"{MIRURO_PIPE_URL}?e={encoded_req}", headers=HEADERS)
         except Exception:
@@ -161,7 +164,7 @@ async def _fetch_raw_recents() -> dict:
     try:
         res = await pipe_session.get(f"{MIRURO_PIPE_URL}?e={encoded_req}", headers=HEADERS)
     except Exception:
-        pipe_session = CurlSession(impersonate="chrome110")
+        pipe_session = CurlSession(impersonate=PIPE_IMPERSONATE)
         try:
             res = await pipe_session.get(f"{MIRURO_PIPE_URL}?e={encoded_req}", headers=HEADERS)
         except Exception:
@@ -1114,7 +1117,7 @@ async def get_sources(
     try:
         res = await pipe_session.get(f"{MIRURO_PIPE_URL}?e={encoded_req}", headers=HEADERS)
     except Exception:
-        pipe_session = CurlSession(impersonate="chrome110")
+        pipe_session = CurlSession(impersonate=PIPE_IMPERSONATE)
         try:
             res = await pipe_session.get(f"{MIRURO_PIPE_URL}?e={encoded_req}", headers=HEADERS)
         except Exception:
