@@ -28,7 +28,7 @@ cp .env_example .env
 | `API_KEY`                     | —                                           | Auth header value (`x-api-key`)                                                                                               |
 | `API_DEBUG`                   | `False`                                     | `True` renders full HTML docs at `/`                                                                                          |
 | `REDIS_HOST`                  | `localhost`                                 | Redis host for caching                                                                                                        |
-| `REDIS_PORT`                  | `6379`                                      | Redis port                                                                                                                    |
+| `REDIS_PORT`                  | `XXXX`                                      | Redis port                                                                                                                    |
 | `REDIS_PASSWORD`              | —                                           | Redis password                                                                                                                |
 | `CACHE_RECENT_EPISODES_HOURS` | `2`                                         | TTL for `/recent-episodes` cache                                                                                              |
 | `MIRURO_BASE_URL`             | — (required)                                | Base domain for the Miruro pipe, e.g. `https://www.miruro.XX`. Update this if Miruro changes domains                          |
