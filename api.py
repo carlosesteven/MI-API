@@ -74,10 +74,11 @@ async def secure_api(request: Request, call_next):
 
     return await call_next(request)
 
+PIPE_USER_AGENT = os.getenv("PIPE_USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
 PIPE_EXTRA_HEADERS = json.loads(os.getenv("PIPE_EXTRA_HEADERS", "{}"))
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
+    "User-Agent": PIPE_USER_AGENT,
     "Referer": "https://www.miruro.to/",
     **PIPE_EXTRA_HEADERS,
 }
