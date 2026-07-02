@@ -74,16 +74,17 @@ async def secure_api(request: Request, call_next):
 
     return await call_next(request)
 
+MIRURO_BASE_URL = os.getenv("MIRURO_BASE_URL", "https://www.miruro.to").rstrip("/")
 PIPE_USER_AGENT = os.getenv("PIPE_USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
 PIPE_EXTRA_HEADERS = json.loads(os.getenv("PIPE_EXTRA_HEADERS", "{}"))
 
 HEADERS = {
     "User-Agent": PIPE_USER_AGENT,
-    "Referer": "https://www.miruro.to/",
+    "Referer": f"{MIRURO_BASE_URL}/",
     **PIPE_EXTRA_HEADERS,
 }
 ANILIST_URL = "https://graphql.anilist.co"
-MIRURO_PIPE_URL = "https://www.miruro.to/api/secure/pipe"
+MIRURO_PIPE_URL = f"{MIRURO_BASE_URL}/api/secure/pipe"
 
 def _proxy_img(url: str) -> str:
     # Proxy removed — return original image URL
