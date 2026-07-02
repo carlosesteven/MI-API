@@ -74,7 +74,7 @@ async def secure_api(request: Request, call_next):
 
     return await call_next(request)
 
-MIRURO_BASE_URL = os.getenv("MIRURO_BASE_URL", "https://www.miruro.to").rstrip("/")
+MIRURO_BASE_URL = os.getenv("MIRURO_BASE_URL").rstrip("/")
 PIPE_USER_AGENT = os.getenv("PIPE_USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
 PIPE_EXTRA_HEADERS = json.loads(os.getenv("PIPE_EXTRA_HEADERS", "{}"))
 
