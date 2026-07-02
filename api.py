@@ -1,6 +1,8 @@
 import base64, json, gzip, httpx, os
 from curl_cffi.requests import AsyncSession as CurlSession
 import redis.asyncio as aioredis
+
+pipe_session = CurlSession(impersonate="chrome110")
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -130,14 +132,21 @@ async def _fetch_raw_episodes(anilist_id: int) -> dict:
         "body": None,
         "version": "0.1.0",
     }
+    global pipe_session
     encoded_req = _encode_pipe_request(payload)
-    async with CurlSession(impersonate="chrome110") as client:
-        res = await client.get(f"{MIRURO_PIPE_URL}?e={encoded_req}", headers=HEADERS)
-        if res.status_code != 200:
-            raise HTTPException(status_code=res.status_code, detail="Pipe request failed")
-        data = _decode_pipe_response(res.text.strip())
-        _deep_translate(data)
-        return data
+    try:
+        res = await pipe_session.get(f"{MIRURO_PIPE_URL}?e={encoded_req}", headers=HEADERS)
+    except Exception:
+        pipe_session = CurlSession(impersonate="chrome110")
+        try:
+            res = await pipe_session.get(f"{MIRURO_PIPE_URL}?e={encoded_req}", headers=HEADERS)
+        except Exception:
+            raise HTTPException(status_code=503, detail="Pipe unavailable")
+    if res.status_code != 200:
+        raise HTTPException(status_code=res.status_code, detail="Pipe request failed")
+    data = _decode_pipe_response(res.text.strip())
+    _deep_translate(data)
+    return data
 
 async def _fetch_raw_recents() -> dict:
     """Internal helper to fetch raw, decoded episode data from Miruro pipe."""
@@ -147,14 +156,21 @@ async def _fetch_raw_recents() -> dict:
         "query": {"sort":["TIME_DESC"],"newest":True},
         "body": None,
     }
+    global pipe_session
     encoded_req = _encode_pipe_request(payload)
-    async with CurlSession(impersonate="chrome110") as client:
-        res = await client.get(f"{MIRURO_PIPE_URL}?e={encoded_req}", headers=HEADERS)
-        if res.status_code != 200:
-            raise HTTPException(status_code=res.status_code, detail="Pipe request failed")
-        data = _decode_pipe_response(res.text.strip())
-        _deep_translate(data)
-        return data
+    try:
+        res = await pipe_session.get(f"{MIRURO_PIPE_URL}?e={encoded_req}", headers=HEADERS)
+    except Exception:
+        pipe_session = CurlSession(impersonate="chrome110")
+        try:
+            res = await pipe_session.get(f"{MIRURO_PIPE_URL}?e={encoded_req}", headers=HEADERS)
+        except Exception:
+            raise HTTPException(status_code=503, detail="Pipe unavailable")
+    if res.status_code != 200:
+        raise HTTPException(status_code=res.status_code, detail="Pipe request failed")
+    data = _decode_pipe_response(res.text.strip())
+    _deep_translate(data)
+    return data
 
 # ─── Shared GraphQL Fragments ────────────────────────────────────────────────
 
@@ -1093,12 +1109,19 @@ async def get_sources(
         "body": None,
         "version": "0.1.0",
     }
+    global pipe_session
     encoded_req = _encode_pipe_request(payload)
-    async with CurlSession(impersonate="chrome110") as client:
-        res = await client.get(f"{MIRURO_PIPE_URL}?e={encoded_req}", headers=HEADERS)
-        if res.status_code != 200:
-            raise HTTPException(status_code=res.status_code, detail="Pipe request failed")
-        return _proxy_deep_images(_decode_pipe_response(res.text.strip()))
+    try:
+        res = await pipe_session.get(f"{MIRURO_PIPE_URL}?e={encoded_req}", headers=HEADERS)
+    except Exception:
+        pipe_session = CurlSession(impersonate="chrome110")
+        try:
+            res = await pipe_session.get(f"{MIRURO_PIPE_URL}?e={encoded_req}", headers=HEADERS)
+        except Exception:
+            raise HTTPException(status_code=503, detail="Pipe unavailable")
+    if res.status_code != 200:
+        raise HTTPException(status_code=res.status_code, detail="Pipe request failed")
+    return _proxy_deep_images(_decode_pipe_response(res.text.strip()))
 
 @app.get("/watch/{provider}/{anilist_id}/{category}/{slug}")
 async def get_watch_sources(provider: str, anilist_id: int, category: str, slug: str):
