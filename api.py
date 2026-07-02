@@ -126,6 +126,26 @@ def _inject_source_slugs(data: dict, anilist_id: int):
                     ep["id"] = f"watch/{provider_name}/{anilist_id}/{category}/{prefix}-{ep['number']}"
     return data
 
+async def _pipe_get(encoded_req: str):
+    """GET the pipe with the shared session, replacing and retrying once on any failure (connection error or non-200 status)."""
+    global pipe_session
+    url = f"{MIRURO_PIPE_URL}?e={encoded_req}"
+    try:
+        res = await pipe_session.get(url, headers=HEADERS)
+        if res.status_code == 200:
+            return res
+    except Exception:
+        pass
+
+    pipe_session = CurlSession(impersonate=PIPE_IMPERSONATE)
+    try:
+        res = await pipe_session.get(url, headers=HEADERS)
+    except Exception:
+        raise HTTPException(status_code=503, detail="Pipe unavailable")
+    if res.status_code != 200:
+        raise HTTPException(status_code=res.status_code, detail="Pipe request failed")
+    return res
+
 async def _fetch_raw_episodes(anilist_id: int) -> dict:
     """Internal helper to fetch raw, decoded episode data from Miruro pipe."""
     payload = {
@@ -135,18 +155,8 @@ async def _fetch_raw_episodes(anilist_id: int) -> dict:
         "body": None,
         "version": "0.1.0",
     }
-    global pipe_session
     encoded_req = _encode_pipe_request(payload)
-    try:
-        res = await pipe_session.get(f"{MIRURO_PIPE_URL}?e={encoded_req}", headers=HEADERS)
-    except Exception:
-        pipe_session = CurlSession(impersonate=PIPE_IMPERSONATE)
-        try:
-            res = await pipe_session.get(f"{MIRURO_PIPE_URL}?e={encoded_req}", headers=HEADERS)
-        except Exception:
-            raise HTTPException(status_code=503, detail="Pipe unavailable")
-    if res.status_code != 200:
-        raise HTTPException(status_code=res.status_code, detail="Pipe request failed")
+    res = await _pipe_get(encoded_req)
     data = _decode_pipe_response(res.text.strip())
     _deep_translate(data)
     return data
@@ -159,18 +169,8 @@ async def _fetch_raw_recents() -> dict:
         "query": {"sort":["TIME_DESC"],"newest":True},
         "body": None,
     }
-    global pipe_session
     encoded_req = _encode_pipe_request(payload)
-    try:
-        res = await pipe_session.get(f"{MIRURO_PIPE_URL}?e={encoded_req}", headers=HEADERS)
-    except Exception:
-        pipe_session = CurlSession(impersonate=PIPE_IMPERSONATE)
-        try:
-            res = await pipe_session.get(f"{MIRURO_PIPE_URL}?e={encoded_req}", headers=HEADERS)
-        except Exception:
-            raise HTTPException(status_code=503, detail="Pipe unavailable")
-    if res.status_code != 200:
-        raise HTTPException(status_code=res.status_code, detail="Pipe request failed")
+    res = await _pipe_get(encoded_req)
     data = _decode_pipe_response(res.text.strip())
     _deep_translate(data)
     return data
@@ -1112,18 +1112,8 @@ async def get_sources(
         "body": None,
         "version": "0.1.0",
     }
-    global pipe_session
     encoded_req = _encode_pipe_request(payload)
-    try:
-        res = await pipe_session.get(f"{MIRURO_PIPE_URL}?e={encoded_req}", headers=HEADERS)
-    except Exception:
-        pipe_session = CurlSession(impersonate=PIPE_IMPERSONATE)
-        try:
-            res = await pipe_session.get(f"{MIRURO_PIPE_URL}?e={encoded_req}", headers=HEADERS)
-        except Exception:
-            raise HTTPException(status_code=503, detail="Pipe unavailable")
-    if res.status_code != 200:
-        raise HTTPException(status_code=res.status_code, detail="Pipe request failed")
+    res = await _pipe_get(encoded_req)
     return _proxy_deep_images(_decode_pipe_response(res.text.strip()))
 
 @app.get("/watch/{provider}/{anilist_id}/{category}/{slug}")
