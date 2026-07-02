@@ -70,3 +70,5 @@ htmlcov/
 *.tar.xz
 *.tar.zst
 ```
+
+SESSION_LOG.md
