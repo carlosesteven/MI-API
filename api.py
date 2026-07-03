@@ -82,7 +82,7 @@ app.add_middleware(
 @app.middleware("http")
 async def secure_api(request: Request, call_next):
     # Allow home page (docs) without restrictions
-    if request.url.path in ["/", "/docs", "/redoc", "/openapi.json"]:
+    if request.url.path in ["/", "/docs", "/redoc", "/openapi.json", "/health"]:
         return await call_next(request)
 
     # 1. Check API Key
@@ -623,6 +623,12 @@ async def get_recent(
 ):
     """Get currently airing anime with full metadata and pagination."""
     return await _fetch_collection("START_DATE_DESC", "RELEASING", page=page, per_page=per_page)
+
+@app.get("/health")
+async def health():
+    """Basic liveness check — always returns 200 if the server is up. Bypasses auth."""
+    return {"status": "ok"}
+
 
 @app.get("/cache-status")
 async def get_cache_status():
