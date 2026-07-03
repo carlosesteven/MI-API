@@ -13,18 +13,31 @@ app = FastAPI(title="Miruro API", version="2.0")
 
 # --- Security Configuration ---
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "").split(",")
+
+# --- API Key Header Name ---
 API_KEY_NAME = "x-api-key"
+
+# --- API Key Configuration ---
 VALID_API_KEY = os.getenv("API_KEY")
+
+# --- Debug Configuration ---
 API_DEBUG = os.getenv("API_DEBUG", "False").lower() == "true"
 
 # --- Redis Cache Configuration ---
-REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+REDIS_HOST = os.getenv("REDIS_HOST")
+REDIS_PORT = os.getenv("REDIS_PORT")
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD") or None
+REDIS_ENABLED = bool(REDIS_HOST and REDIS_PORT)
+
+# --- Cache TTLs (in seconds) ---
 CACHE_RECENT_EPISODES_HOURS = int(os.getenv("CACHE_RECENT_EPISODES_HOURS", "2"))
 CACHE_RECENT_EPISODES_TTL = CACHE_RECENT_EPISODES_HOURS * 3600  # seconds
+CACHE_EPISODES_HOURS = int(os.getenv("CACHE_EPISODES_HOURS", "1"))
+CACHE_EPISODES_TTL = CACHE_EPISODES_HOURS * 3600  # seconds
 
+# --- Redis Cache Keys ---
 REDIS_KEY_RECENT_EPISODES = "miruro_api:cache:recent_episodes"
+REDIS_KEY_EPISODES_PREFIX = "miruro_api:cache:episodes"
 
 # --- Miruro Pipe Configuration ---
 MIRURO_BASE_URL = os.getenv("MIRURO_BASE_URL").rstrip("/")
@@ -40,17 +53,21 @@ HEADERS = {
     "Referer": f"{MIRURO_BASE_URL}/",
     **PIPE_EXTRA_HEADERS,
 }
+
+# --- AniList GraphQL Endpoint ---
 ANILIST_URL = "https://graphql.anilist.co"
+
+# --- Miruro Pipe Endpoint ---
 MIRURO_PIPE_URL = f"{MIRURO_BASE_URL}/api/secure/pipe"
 
 redis_client = aioredis.Redis(
     host=REDIS_HOST,
-    port=REDIS_PORT,
+    port=int(REDIS_PORT),
     password=REDIS_PASSWORD,
     decode_responses=True,
     socket_connect_timeout=3,
     socket_timeout=3,
-)
+) if REDIS_ENABLED else None
 
 pipe_session = CurlSession(impersonate=PIPE_IMPERSONATE)
 
@@ -125,6 +142,27 @@ def _inject_source_slugs(data: dict, anilist_id: int):
                     prefix = orig_id.split(":")[0] if ":" in orig_id else orig_id
                     ep["id"] = f"watch/{provider_name}/{anilist_id}/{category}/{prefix}-{ep['number']}"
     return data
+
+async def _cache_get(key: str):
+    """Fetch a cached JSON value from Redis. Returns None if Redis isn't configured, unreachable, or the key is missing."""
+    if not REDIS_ENABLED:
+        return None
+    try:
+        cached = await redis_client.get(key)
+        return json.loads(cached) if cached else None
+    except Exception:
+        return None
+
+
+async def _cache_set(key: str, value, ttl: int):
+    """Store a JSON value in Redis. No-op if Redis isn't configured or unreachable."""
+    if not REDIS_ENABLED:
+        return
+    try:
+        await redis_client.setex(key, ttl, json.dumps(value))
+    except Exception:
+        pass
+
 
 async def _pipe_get(encoded_req: str):
     """GET the pipe with the shared session, replacing and retrying once on any failure (connection error or non-200 status)."""
@@ -854,24 +892,29 @@ async def get_recent(
     """Get currently airing anime with full metadata and pagination."""
     return await _fetch_collection("START_DATE_DESC", "RELEASING", page=page, per_page=per_page)
 
+@app.get("/cache-status")
+async def get_cache_status():
+    """Check whether Redis caching is configured and reachable."""
+    if not REDIS_ENABLED:
+        return {"enabled": False, "connected": False, "reason": "REDIS_HOST/REDIS_PORT not set"}
+
+    try:
+        await redis_client.ping()
+        return {"enabled": True, "connected": True}
+    except Exception as e:
+        return {"enabled": True, "connected": False, "reason": str(e)}
+
+
 @app.get("/recent-episodes")
 async def get_recent_episodes():
     """Get currently airing anime with full metadata and pagination."""
-    try:
-        cached = await redis_client.get(REDIS_KEY_RECENT_EPISODES)
-        if cached:
-            return json.loads(cached)
-    except Exception:
-        pass
+    cached = await _cache_get(REDIS_KEY_RECENT_EPISODES)
+    if cached:
+        return cached
 
     recents = await _fetch_raw_recents()
     result = _proxy_deep_images(recents)
-
-    try:
-        await redis_client.setex(REDIS_KEY_RECENT_EPISODES, CACHE_RECENT_EPISODES_TTL, json.dumps(result))
-    except Exception:
-        pass
-
+    await _cache_set(REDIS_KEY_RECENT_EPISODES, result, CACHE_RECENT_EPISODES_TTL)
     return result
 
 @app.get("/schedule")
@@ -1087,8 +1130,15 @@ async def get_anime_recommendations(
 @app.get("/episodes/{anilist_id}")
 async def get_episodes(anilist_id: int):
     """Get the episode list for an anime, with slugified source IDs."""
+    cache_key = f"{REDIS_KEY_EPISODES_PREFIX}:{anilist_id}"
+    cached = await _cache_get(cache_key)
+    if cached:
+        return cached
+
     data = await _fetch_raw_episodes(anilist_id)
-    return _proxy_deep_images(_inject_source_slugs(data, anilist_id))
+    result = _proxy_deep_images(_inject_source_slugs(data, anilist_id))
+    await _cache_set(cache_key, result, CACHE_EPISODES_TTL)
+    return result
 
 
 @app.get("/sources")
