@@ -175,7 +175,13 @@ async def _pipe_get(encoded_req: str):
     except Exception:
         pass
 
+    stale_session = pipe_session
     pipe_session = CurlSession(impersonate=PIPE_IMPERSONATE)
+    try:
+        await stale_session.close()
+    except Exception:
+        pass
+
     try:
         res = await pipe_session.get(url, headers=HEADERS)
     except Exception:
