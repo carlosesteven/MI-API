@@ -59,6 +59,7 @@ python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 nohup python -m uvicorn api:app --host 0.0.0.0 --port 8848 > /dev/null 2>&1 &
+nohup python -m uvicorn api:app --host 0.0.0.0 --port 8848 > "uvicorn-$(date +%F-%H%M%S).log" 2>&1 &
 ```
 
 ### Update to latest version
@@ -78,6 +79,7 @@ kill <PID>
 
 # 5. Start again
 nohup python -m uvicorn api:app --host 0.0.0.0 --port 8848 > /dev/null 2>&1 &
+nohup python -m uvicorn api:app --host 0.0.0.0 --port 8848 > "uvicorn-$(date +%F-%H%M%S).log" 2>&1 &
 ```
 
 > **Important:** always kill by PID (`kill <PID>`), not by name (`pkill`). The server may be running multiple uvicorn processes on different ports.
