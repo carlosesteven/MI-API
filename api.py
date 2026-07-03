@@ -187,7 +187,8 @@ async def _pipe_get(encoded_req: str):
     except Exception:
         raise HTTPException(status_code=503, detail="Pipe unavailable")
     if res.status_code != 200:
-        raise HTTPException(status_code=res.status_code, detail="Pipe request failed")
+        status = res.status_code if 100 <= res.status_code <= 599 else 502
+        raise HTTPException(status_code=status, detail="Pipe request failed")
     return res
 
 async def _fetch_raw_episodes(anilist_id: int) -> dict:
