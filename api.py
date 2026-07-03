@@ -164,14 +164,15 @@ async def _cache_set(key: str, value, ttl: int):
         pass
 
 
-async def _pipe_get(encoded_req: str):
-    """GET the pipe with the shared session, replacing and retrying once on any failure (connection error or non-200 status)."""
+async def _pipe_get(encoded_req: str) -> dict:
+    """GET the pipe and decode the response, replacing the session and retrying once on any
+    failure (connection error, non-200 status, or a corrupted/truncated response body)."""
     global pipe_session
     url = f"{MIRURO_PIPE_URL}?e={encoded_req}"
     try:
         res = await pipe_session.get(url, headers=HEADERS)
         if res.status_code == 200:
-            return res
+            return _decode_pipe_response(res.text.strip())
     except Exception:
         pass
 
@@ -189,7 +190,10 @@ async def _pipe_get(encoded_req: str):
     if res.status_code != 200:
         status = res.status_code if 100 <= res.status_code <= 599 else 502
         raise HTTPException(status_code=status, detail="Pipe request failed")
-    return res
+    try:
+        return _decode_pipe_response(res.text.strip())
+    except Exception:
+        raise HTTPException(status_code=502, detail="Pipe response corrupted")
 
 async def _fetch_raw_episodes(anilist_id: int) -> dict:
     """Internal helper to fetch raw, decoded episode data from Miruro pipe."""
@@ -201,8 +205,7 @@ async def _fetch_raw_episodes(anilist_id: int) -> dict:
         "version": "0.1.0",
     }
     encoded_req = _encode_pipe_request(payload)
-    res = await _pipe_get(encoded_req)
-    data = _decode_pipe_response(res.text.strip())
+    data = await _pipe_get(encoded_req)
     _deep_translate(data)
     return data
 
@@ -215,8 +218,7 @@ async def _fetch_raw_recents() -> dict:
         "body": None,
     }
     encoded_req = _encode_pipe_request(payload)
-    res = await _pipe_get(encoded_req)
-    data = _decode_pipe_response(res.text.strip())
+    data = await _pipe_get(encoded_req)
     _deep_translate(data)
     return data
 
@@ -908,8 +910,8 @@ async def get_sources(
         "version": "0.1.0",
     }
     encoded_req = _encode_pipe_request(payload)
-    res = await _pipe_get(encoded_req)
-    return _proxy_deep_images(_decode_pipe_response(res.text.strip()))
+    data = await _pipe_get(encoded_req)
+    return _proxy_deep_images(data)
 
 @app.get("/watch/{provider}/{anilist_id}/{category}/{slug}")
 async def get_watch_sources(provider: str, anilist_id: int, category: str, slug: str):
