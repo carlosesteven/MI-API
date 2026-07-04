@@ -53,3 +53,28 @@ REDIS_KEY_RECENT_EPISODES   = "miruro_api:cache:recent_episodes"
 
 redis_client = aioredis.Redis(host=..., port=..., password=..., decode_responses=True)
 ```
+
+---
+
+## Sesión 2026-07-03
+
+### Servicio systemd para auto-inicio en boot
+**Archivos modificados:** `README.md` (nuevo item "Deploy (production — systemd service, auto-start on boot)")
+**Archivo creado (fuera del repo):** `/etc/systemd/system/mi-api.service`
+
+**Qué se implementó:**
+- Unidad systemd (`mi-api.service`) que reemplaza el arranque manual con `nohup ... &` tras un reinicio de la máquina. Activa el venv (`source venv/bin/activate`) y ejecuta `python -m uvicorn api:app --host 0.0.0.0 --port 8848` con `exec`, redirigiendo salida a un log timestamped (`uvicorn-$(date +%F-%H%M%S).log`) dentro del repo, igual convención que el flujo manual del README.
+- `Type=simple` + `exec` en vez de `nohup`/`&`: bajo systemd no hacen falta (systemd ya desacopla el proceso de la terminal) y romperían el tracking del PID si se usaran.
+- `Restart=on-failure` + `RestartSec=5`: reinicio automático ante crash.
+- `WantedBy=multi-user.target` + `systemctl enable`: arranque automático en cada boot.
+
+**Incidente al activar:** al iniciar el servicio por primera vez, hubo ~9 reinicios en bucle por `Errno 98: address already in use` — un proceso `nohup` manual previo seguía ocupando el puerto 8848. Se resolvió al matar ese proceso; el servicio quedó estable con un solo proceso corriendo bajo systemd. Este caso ya quedó documentado como advertencia en el README.
+
+**Comandos clave:**
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable mi-api.service
+sudo systemctl start mi-api.service
+sudo systemctl status mi-api.service
+journalctl -u mi-api -f
+```

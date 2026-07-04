@@ -84,6 +84,63 @@ nohup python -m uvicorn api:app --host 0.0.0.0 --port 8848 > "uvicorn-$(date +%F
 
 > **Important:** always kill by PID (`kill <PID>`), not by name (`pkill`). The server may be running multiple uvicorn processes on different ports.
 
+## Deploy (production — systemd service, auto-start on boot)
+
+Instead of manually launching `nohup` after every reboot, register a systemd service so the API starts automatically on boot and restarts on crash.
+
+### Install
+
+Create `/etc/systemd/system/mi-api.service`:
+
+```ini
+[Unit]
+Description=MI-API (uvicorn)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=carlos-esteven
+Group=carlos-esteven
+WorkingDirectory=/home/carlos-esteven/MI-API
+ExecStart=/bin/bash -c 'source /home/carlos-esteven/MI-API/venv/bin/activate && exec python -m uvicorn api:app --host 0.0.0.0 --port 8848 >> "/home/carlos-esteven/MI-API/uvicorn-$(date +%%F-%%H%%M%%S).log" 2>&1'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Then enable and start it:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable mi-api.service
+sudo systemctl start mi-api.service
+```
+
+`ExecStart` activates the venv and runs uvicorn the same way as the manual command, writing a timestamped log file on every start (matches the `uvicorn-$(date +%F-%H%M%S).log` convention above). `nohup`/`&` are not needed here — systemd already detaches the process from any terminal; `Type=simple` requires the process to stay in the foreground, which `exec` guarantees.
+
+### Verify
+
+```bash
+sudo systemctl status mi-api.service     # process state, main PID
+journalctl -u mi-api -f                  # systemd-level logs (start/stop/restarts)
+tail -f uvicorn-*.log                    # uvicorn's own logs
+```
+
+> If a manually-started (`nohup`) instance is already bound to port 8848, the service will fail to bind and keep restarting (`Errno 98: address already in use`) until that process is killed.
+
+### Update to latest version
+
+```bash
+git pull
+source venv/bin/activate && pip install -r requirements.txt
+sudo systemctl restart mi-api.service
+```
+
+No more hunting for PIDs to kill manually — systemd manages the process lifecycle.
+
 ## Disclaimer
 
 This project is for educational purposes and API integrity research only. The author takes absolutely zero responsibility for network usage. Code contains zero skiddable artifacts.
