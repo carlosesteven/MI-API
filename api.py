@@ -913,13 +913,21 @@ async def get_sources(
     data = await _pipe_get(encoded_req)
     return _proxy_deep_images(data)
 
+def _force_mp4_to_hls_temp(data: dict) -> dict:
+    """TEMP (ver SESSION_LOG.md): fuerza streams con type=mp4 a hls. Borrar esta función
+    completa y su única llamada en get_watch_sources para revertir. No toca "embed" ni "hls"."""
+    for stream in data.get("streams", []):
+        if stream.get("type") == "mp4":
+            stream["type"] = "hls"
+    return data
+
 @app.get("/watch/{provider}/{anilist_id}/{category}/{slug}")
 async def get_watch_sources(provider: str, anilist_id: int, category: str, slug: str):
     """The super simple sources endpoint resolving slugs (prefix-number) back to provider IDs."""
     data = await _fetch_raw_episodes(anilist_id)
     prov_data = data.get("providers", {}).get(provider, {})
     ep_list = prov_data.get("episodes", {}).get(category, [])
-    
+
     # Resolve the slug back to the original ID
     target_id = None
     for ep in ep_list:
@@ -929,8 +937,9 @@ async def get_watch_sources(provider: str, anilist_id: int, category: str, slug:
         if generated == slug:
             target_id = orig_id
             break
-            
+
     if not target_id:
         raise HTTPException(status_code=404, detail=f"Episode slug '{slug}' not found for provider {provider}")
-        
-    return await get_sources(episodeId=target_id, provider=provider, anilistId=anilist_id, category=category)
+
+    result = await get_sources(episodeId=target_id, provider=provider, anilistId=anilist_id, category=category)
+    return _force_mp4_to_hls_temp(result)  # TEMP: quitar esta línea para revertir (ver SESSION_LOG.md)

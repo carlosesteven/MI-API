@@ -78,3 +78,55 @@ sudo systemctl start mi-api.service
 sudo systemctl status mi-api.service
 journalctl -u mi-api -f
 ```
+
+---
+
+## Sesión 2026-07-06
+
+### [TEMPORAL] Forzar `type: mp4` → `type: hls` solo en `/watch/{provider}/{anilist_id}/{category}/{slug}`
+**Archivo modificado:** `api.py`
+**Estado:** ACTIVO. Pensado para eliminarse en el futuro — instrucciones exactas de reversión más abajo.
+
+**Motivo:** ajuste puntual solicitado por el usuario para el caso `/watch/ally/178789/sub/allmanga-2` (y cualquier otra ruta `/watch/...`): algunos streams del pipe llegan con `"type": "mp4"` y se necesita que temporalmente se reporten como `"type": "hls"`. No se toca ningún otro valor de `type` (p. ej. `"embed"` se deja intacto).
+
+**Qué se implementó:**
+- Se agregó la función `_force_mp4_to_hls_temp(data)` en `api.py`, justo antes de `get_watch_sources` (línea ~916, antes del decorador `@app.get("/watch/{provider}/{anilist_id}/{category}/{slug}")`). Recorre `data["streams"]` y donde `stream["type"] == "mp4"` lo reemplaza por `"hls"`.
+- Se modificó el `return` final de `get_watch_sources` (antes: `return await get_sources(...)`) para que capture el resultado en `result` y le aplique `_force_mp4_to_hls_temp(result)` antes de devolverlo.
+- **Alcance:** el cambio vive únicamente dentro de `get_watch_sources`. El endpoint `/sources` (llamado directo, sin pasar por el slug de `/watch/...`) NO se ve afectado — se verificó en vivo que sigue devolviendo los streams sin modificar.
+
+**Diff aplicado (para referencia exacta):**
+```python
+# ANTES (dentro de get_watch_sources, última línea de la función):
+    return await get_sources(episodeId=target_id, provider=provider, anilistId=anilist_id, category=category)
+
+# DESPUÉS:
+def _force_mp4_to_hls_temp(data: dict) -> dict:
+    """TEMP (ver SESSION_LOG.md): fuerza streams con type=mp4 a hls. Borrar esta función
+    completa y su única llamada en get_watch_sources para revertir. No toca "embed" ni "hls"."""
+    for stream in data.get("streams", []):
+        if stream.get("type") == "mp4":
+            stream["type"] = "hls"
+    return data
+
+@app.get("/watch/{provider}/{anilist_id}/{category}/{slug}")
+async def get_watch_sources(...):
+    ...
+    result = await get_sources(episodeId=target_id, provider=provider, anilistId=anilist_id, category=category)
+    return _force_mp4_to_hls_temp(result)  # TEMP: quitar esta línea para revertir (ver SESSION_LOG.md)
+```
+
+**Cómo revertir (cuando el usuario lo pida, ej. "elimina el ajuste temporal de mp4 a hls"):**
+1. En `api.py`, borrar la función completa `_force_mp4_to_hls_temp` (las 6 líneas, desde `def _force_mp4_to_hls_temp(data: dict) -> dict:` hasta su `return data`).
+2. En `get_watch_sources`, reemplazar las dos líneas:
+   ```python
+   result = await get_sources(episodeId=target_id, provider=provider, anilistId=anilist_id, category=category)
+   return _force_mp4_to_hls_temp(result)  # TEMP: quitar esta línea para revertir (ver SESSION_LOG.md)
+   ```
+   por la línea original:
+   ```python
+   return await get_sources(episodeId=target_id, provider=provider, anilistId=anilist_id, category=category)
+   ```
+3. Borrar esta sección del `SESSION_LOG.md` (o marcarla como "revertido" con fecha).
+4. No hay variables de entorno, dependencias ni otros archivos involucrados — es autocontenido en `api.py`.
+
+**Verificación tras revertir:** `curl` a `/watch/ally/178789/sub/allmanga-2` con el `x-api-key` correcto debe volver a mostrar `"type": "mp4"` en los streams que originalmente lo traían así (ya no todos como `"hls"`).
