@@ -115,8 +115,18 @@ Then enable and start it:
 
 ```bash
 sudo systemctl daemon-reload
+
 sudo systemctl enable mi-api.service
+
 sudo systemctl start mi-api.service
+
+sudo systemctl stop mi-api.service
+
+sudo systemctl daemon-reload
+
+sudo systemctl restart mi-api.service
+
+sudo systemctl status mi-api.service
 ```
 
 `ExecStart` activates the venv and runs uvicorn the same way as the manual command, writing a timestamped log file on every start (matches the `uvicorn-$(date +%F-%H%M%S).log` convention above). `nohup`/`&` are not needed here — systemd already detaches the process from any terminal; `Type=simple` requires the process to stay in the foreground, which `exec` guarantees.
