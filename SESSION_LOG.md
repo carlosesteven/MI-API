@@ -162,3 +162,17 @@ No requiere tocar código ni reiniciar nada más que el proceso (para recargar e
 **Estado actual:** `BLOCKED_EPISODE_PREFIXES=animepahe` activo en `.env`, por el problema de arriba. Quitar `animepahe` de esa lista (o vaciar la variable) cuando Miruro arregle su integración con animepahe — verificado en local que con la variable seteada, `kiwi/sub` en `/episodes/209983` devuelve 0 episodios y el resto de providers no se ven afectados.
 
 **Nota:** este cambio NO toca `/watch/{provider}/.../{slug}` — si alguien pega directamente una URL vieja `/watch/kiwi/.../animepahe-X`, ese endpoint sigue intentando resolverla y tardará los ~60s de antes. Solo se filtra en el listado de `/episodes`.
+
+### Fix: `timeUntilAiring` desactualizado en `/recent-episodes`
+**Archivo modificado:** `api.py`
+
+**Motivo:** la app Android (Kotlin) del usuario consume `/recent-episodes` y filtra episodios "recién salidos" comparando el campo `timeUntilAiring` contra un umbral muy chico (`api_miruro_recents_timestamp` en Remote Config, default 50 segundos). Se detectó que el `timeUntilAiring` que devuelve el pipe de Miruro (`path: "schedule"`) viene de un snapshot que Miruro cachea de su lado y no recalcula seguido — se verificó pidiendo `/recent-episodes` dos veces separadas por horas reales y la respuesta fue **byte-idéntica** (mismo MD5), con `timeUntilAiring` de un episodio que ya había salido hace horas todavía en positivo. Con un umbral de 50s, el filtro de la app casi nunca se cumplía hasta que el cache de Miruro se refrescaba (aparentemente 1 vez al día), por eso los episodios "recién salidos" solo aparecían casi al final del día.
+
+**Qué se implementó:**
+- Se duplicó el endpoint original tal cual estaba en `/recent-episodes-old` (función `get_recent_episodes_old`), sin ningún cambio — referencia/rollback rápido si hiciera falta comparar comportamiento.
+- Se agregó `_recompute_time_until_airing(data)` (api.py, antes de `get_recent_episodes`): recorre la lista top-level de `/recent-episodes` y sobreescribe `item["timeUntilAiring"] = item["airingAt"] - int(time.time())` para cada item. `airingAt` sí es estable (viene de AniList, no se mueve), así que el recálculo queda exacto al segundo sin depender de qué tan viejo esté el snapshot de Miruro.
+- Se llama **al servir la respuesta**, tanto si viene de cache Redis como si es fetch fresco — nunca se guarda el valor recalculado en cache, solo se cachea la data cruda (que sí puede quedarse cacheada 2h sin problema, ya que `airingAt`/título/imagen no cambian seguido).
+- Se agregó `import time` a los imports de `api.py`.
+- **No cambia el shape del JSON** (mismo campo, mismo nombre, mismo tipo int, puede quedar negativo si ya pasó — la app Kotlin lee `getInt("timeUntilAiring")` y compara con `<=`, funciona igual sin ningún cambio de la app). Verificado en local: `/recent-episodes-old` sigue devolviendo el valor viejo congelado (positivo), `/recent-episodes` devuelve el valor correcto (negativo, ~-20000s para un episodio que ya salió hace ~5.7h) — se comparó campo por campo que ningún otro dato cambió entre ambos endpoints, solo `timeUntilAiring`.
+
+**Pendiente / no incluido en este cambio:** no se tocó `media.nextAiringEpisode.timeUntilAiring` (campo anidado) — la app Kotlin no lo usa para el filtro, solo lee `nextAiringEpisode.episode` para el número de episodio, así que no hacía falta.

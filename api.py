@@ -1,4 +1,4 @@
-import base64, json, gzip, httpx, os
+import base64, json, gzip, httpx, os, time
 from curl_cffi.requests import AsyncSession as CurlSession
 import redis.asyncio as aioredis
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -683,8 +683,8 @@ async def get_cache_status():
         return {"enabled": True, "connected": False, "reason": str(e)}
 
 
-@app.get("/recent-episodes")
-async def get_recent_episodes():
+@app.get("/recent-episodes-old")
+async def get_recent_episodes_old():
     """Get currently airing anime with full metadata and pagination."""
     cached = await _cache_get(REDIS_KEY_RECENT_EPISODES)
     if cached:
@@ -694,6 +694,30 @@ async def get_recent_episodes():
     result = _proxy_deep_images(recents)
     await _cache_set(REDIS_KEY_RECENT_EPISODES, result, CACHE_RECENT_EPISODES_TTL)
     return result
+
+
+def _recompute_time_until_airing(data: list) -> list:
+    """Recompute each item's top-level timeUntilAiring from its (stable) airingAt against the
+    current server time. Miruro's own value is a snapshot that can stay frozen for hours, which
+    breaks clients that gate on a tight timeUntilAiring threshold (e.g. "already aired")."""
+    now = int(time.time())
+    for item in data:
+        if isinstance(item, dict) and isinstance(item.get("airingAt"), int):
+            item["timeUntilAiring"] = item["airingAt"] - now
+    return data
+
+
+@app.get("/recent-episodes")
+async def get_recent_episodes():
+    """Get currently airing anime with full metadata and pagination."""
+    cached = await _cache_get(REDIS_KEY_RECENT_EPISODES)
+    if cached:
+        return _recompute_time_until_airing(cached)
+
+    recents = await _fetch_raw_recents()
+    result = _proxy_deep_images(recents)
+    await _cache_set(REDIS_KEY_RECENT_EPISODES, result, CACHE_RECENT_EPISODES_TTL)
+    return _recompute_time_until_airing(result)
 
 @app.get("/schedule")
 async def get_schedule(
