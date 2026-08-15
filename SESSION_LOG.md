@@ -130,3 +130,35 @@ async def get_watch_sources(...):
 4. No hay variables de entorno, dependencias ni otros archivos involucrados — es autocontenido en `api.py`.
 
 **Verificación tras revertir:** `curl` a `/watch/ally/178789/sub/allmanga-2` con el `x-api-key` correcto debe volver a mostrar `"type": "mp4"` en los streams que originalmente lo traían así (ya no todos como `"hls"`).
+
+---
+
+## Sesión 2026-08-15
+
+### Diagnóstico: `/watch/kiwi/209983/sub/animepahe-6` falla/tarda ~60s
+**Investigación, sin cambios de código en esta parte.**
+
+- Se descartó colisión de slugs: los IDs de episodios de `kiwi/sub` para el anime 209983 son únicos y bien formados (`animepahe:6772:77466:1` para el episodio 6).
+- Se aisló el problema llamando directamente a `get_sources()`: **todo** episodio del provider `kiwi` (backend `animepahe`) falla con `503 Pipe unavailable` tras ~60s (dos intentos de `_pipe_get` de ~30s cada uno, sin timeout explícito configurado). Otros providers del mismo anime (`ally`, `pewe`) resuelven bien en <0.5s.
+- Conclusión: no es un bug de `api.py` — la integración de Miruro con `animepahe` está caída/colgándose del lado de ellos. El código no tiene timeout explícito en `pipe_session.get()`, por lo que en vez de fallar rápido, el usuario espera ~60s.
+- Pendiente (no implementado): agregar `timeout=` explícito a las llamadas del pipe en `_pipe_get` para que este tipo de fallas retornen en segundos, no en un minuto.
+
+### Feature: `BLOCKED_EPISODE_PREFIXES` — ocultar providers rotos de `/episodes`
+**Archivos modificados:** `api.py`, `.env`, `CLAUDE.md`
+
+**Qué se implementó (no es un ajuste temporal, es una feature permanente):**
+- Nueva env var `BLOCKED_EPISODE_PREFIXES` (comma-separated), parseada como set en `api.py` (junto a la config de cache, ~línea 42).
+- Nueva función `_filter_blocked_prefixes(data)` (justo antes de `_inject_source_slugs`): recorre `data["providers"][*]["episodes"][*]` y elimina cualquier episodio cuyo `id.split(":")[0]` esté en `BLOCKED_EPISODE_PREFIXES`. No-op si la env var está vacía.
+- Se llama dentro de `get_episodes()` (`GET /episodes/{anilist_id}`), justo después de `_fetch_raw_episodes` y antes de `_inject_source_slugs` (tiene que ir antes porque `_inject_source_slugs` reescribe `ep["id"]` al formato slug `watch/...`, perdiendo el prefijo original).
+- **Nota:** el provider (ej. `kiwi`) sigue apareciendo en la respuesta, pero con la lista de episodios vacía si todos sus IDs matchean el prefijo bloqueado. No se oculta el provider completo, solo los episodios cuyo prefijo esté bloqueado — así si un provider mezcla varios backends, solo se filtra el roto.
+
+**Cómo usarlo (agregar más providers rotos en el futuro):**
+```bash
+# En .env, separar por coma:
+BLOCKED_EPISODE_PREFIXES=animepahe,otroprovider
+```
+No requiere tocar código ni reiniciar nada más que el proceso (para recargar el `.env`).
+
+**Estado actual:** `BLOCKED_EPISODE_PREFIXES=animepahe` activo en `.env`, por el problema de arriba. Quitar `animepahe` de esa lista (o vaciar la variable) cuando Miruro arregle su integración con animepahe — verificado en local que con la variable seteada, `kiwi/sub` en `/episodes/209983` devuelve 0 episodios y el resto de providers no se ven afectados.
+
+**Nota:** este cambio NO toca `/watch/{provider}/.../{slug}` — si alguien pega directamente una URL vieja `/watch/kiwi/.../animepahe-X`, ese endpoint sigue intentando resolverla y tardará los ~60s de antes. Solo se filtra en el listado de `/episodes`.

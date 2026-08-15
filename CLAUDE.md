@@ -52,6 +52,7 @@ Episode IDs returned by the Miruro pipe are base64-encoded. `_translate_id()` de
 | `REDIS_PORT` | `6379` | Redis port |
 | `REDIS_PASSWORD` | — | Redis password |
 | `CACHE_RECENT_EPISODES_HOURS` | `2` | TTL (hours) for the `/recent-episodes` cache |
+| `BLOCKED_EPISODE_PREFIXES` | `` (empty) | Comma-separated episode ID prefixes (part before `:`, e.g. `animepahe`) to strip out of `/episodes` responses — use to hide a provider whose source is broken/hanging upstream, no code change needed |
 | `MIRURO_BASE_URL` | — (required) | Base domain for the Miruro pipe, e.g. `https://www.miruro.to`. No hardcoded fallback — update this if Miruro changes domains again |
 | `PIPE_USER_AGENT` | `Mozilla/5.0 (Windows NT 10.0; Win64; x64)` | User-Agent sent to the pipe |
 | `PIPE_EXTRA_HEADERS` | `{}` | JSON object merged into pipe request headers (e.g. `sec-ch-ua`, `accept`, `cf_clearance`-adjacent headers) — used to adapt to Cloudflare without touching code |

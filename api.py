@@ -39,6 +39,14 @@ CACHE_EPISODES_TTL = CACHE_EPISODES_HOURS * 3600  # seconds
 REDIS_KEY_RECENT_EPISODES = "miruro_api:cache:recent_episodes"
 REDIS_KEY_EPISODES_PREFIX = "miruro_api:cache:episodes"
 
+# --- Blocked Episode Source Prefixes ---
+# Comma-separated list of episode ID prefixes (the part before ':', e.g. "animepahe") to hide
+# from /episodes responses. Use this to hide a source that's temporarily broken/hanging upstream
+# without touching code — just edit the env var and restart.
+BLOCKED_EPISODE_PREFIXES = {
+    p.strip() for p in os.getenv("BLOCKED_EPISODE_PREFIXES", "").split(",") if p.strip()
+}
+
 # --- Miruro Pipe Configuration ---
 MIRURO_BASE_URL = os.getenv("MIRURO_BASE_URL").rstrip("/")
 
@@ -116,6 +124,29 @@ def _proxy_img(url: str) -> str:
 def _proxy_deep_images(obj):
     # Proxy removed — return data unchanged
     return obj
+
+def _filter_blocked_prefixes(data: dict) -> dict:
+    """Remove episodes whose ID prefix (the part before ':') is in BLOCKED_EPISODE_PREFIXES.
+    Configured via the BLOCKED_EPISODE_PREFIXES env var — no code changes needed to add/remove
+    a blocked source."""
+    if not BLOCKED_EPISODE_PREFIXES:
+        return data
+    for provider_data in data.get("providers", {}).values():
+        if not isinstance(provider_data, dict):
+            continue
+        episodes = provider_data.get("episodes", {})
+        if not isinstance(episodes, dict):
+            continue
+        for category, ep_list in episodes.items():
+            if not isinstance(ep_list, list):
+                continue
+            episodes[category] = [
+                ep for ep in ep_list
+                if not (isinstance(ep, dict) and isinstance(ep.get("id"), str)
+                        and ep["id"].split(":")[0] in BLOCKED_EPISODE_PREFIXES)
+            ]
+    return data
+
 
 def _inject_source_slugs(data: dict, anilist_id: int):
     """Transform episode IDs into simplified path-based slugs: watch/PROV/ALID/CAT/PREFIX-NUMBER"""
@@ -883,6 +914,7 @@ async def get_episodes(anilist_id: int):
         return cached
 
     data = await _fetch_raw_episodes(anilist_id)
+    data = _filter_blocked_prefixes(data)
     result = _proxy_deep_images(_inject_source_slugs(data, anilist_id))
     await _cache_set(cache_key, result, CACHE_EPISODES_TTL)
     return result
