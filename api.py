@@ -707,17 +707,41 @@ def _recompute_time_until_airing(data: list) -> list:
     return data
 
 
+def _filter_tv_format(data: list) -> list:
+    """Keep only TV-format entries. The only consumer of /recent-episodes discards every other
+    format client-side anyway, so filtering here just saves payload size and parsing."""
+    return [item for item in data if isinstance(item, dict) and item.get("media", {}).get("format") == "TV"]
+
+
+def _fix_next_airing_episode(data: list) -> list:
+    """Force media.nextAiringEpisode.episode to episode + 1. Miruro's schedule snapshot doesn't
+    always advance nextAiringEpisode in sync with the real air time, so it sometimes still equals
+    the item's own episode instead of episode + 1 — the client derives the displayed episode as
+    nextAiringEpisode.episode - 1, so a non-advanced value makes it under-report by one."""
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        ep = item.get("episode")
+        media = item.get("media")
+        if not isinstance(ep, int) or not isinstance(media, dict):
+            continue
+        nae = media.get("nextAiringEpisode")
+        if isinstance(nae, dict) and isinstance(nae.get("episode"), int):
+            nae["episode"] = ep + 1
+    return data
+
+
 @app.get("/recent-episodes")
 async def get_recent_episodes():
     """Get currently airing anime with full metadata and pagination."""
     cached = await _cache_get(REDIS_KEY_RECENT_EPISODES)
     if cached:
-        return _recompute_time_until_airing(cached)
+        return _fix_next_airing_episode(_recompute_time_until_airing(_filter_tv_format(cached)))
 
     recents = await _fetch_raw_recents()
     result = _proxy_deep_images(recents)
     await _cache_set(REDIS_KEY_RECENT_EPISODES, result, CACHE_RECENT_EPISODES_TTL)
-    return _recompute_time_until_airing(result)
+    return _fix_next_airing_episode(_recompute_time_until_airing(_filter_tv_format(result)))
 
 @app.get("/schedule")
 async def get_schedule(

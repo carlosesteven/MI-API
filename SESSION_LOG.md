@@ -176,3 +176,33 @@ No requiere tocar código ni reiniciar nada más que el proceso (para recargar e
 - **No cambia el shape del JSON** (mismo campo, mismo nombre, mismo tipo int, puede quedar negativo si ya pasó — la app Kotlin lee `getInt("timeUntilAiring")` y compara con `<=`, funciona igual sin ningún cambio de la app). Verificado en local: `/recent-episodes-old` sigue devolviendo el valor viejo congelado (positivo), `/recent-episodes` devuelve el valor correcto (negativo, ~-20000s para un episodio que ya salió hace ~5.7h) — se comparó campo por campo que ningún otro dato cambió entre ambos endpoints, solo `timeUntilAiring`.
 
 **Pendiente / no incluido en este cambio:** no se tocó `media.nextAiringEpisode.timeUntilAiring` (campo anidado) — la app Kotlin no lo usa para el filtro, solo lee `nextAiringEpisode.episode` para el número de episodio, así que no hacía falta.
+
+### Filtro server-side: solo formato `TV` en `/recent-episodes`
+**Archivo modificado:** `api.py`
+
+**Motivo:** el único consumidor de `/recent-episodes` es la app Android, que ya descarta client-side todo lo que no sea `format == "TV"` (ver Kotlin del usuario). Confirmado con el usuario que no hay otro cliente (web, etc.) usando este endpoint que necesite los demás formatos. De 124 items que trae Miruro, solo 72 son `TV` — el resto (`ONA`, `TV_SHORT`, `MOVIE`, `SPECIAL`, `MUSIC`) se descartaban igual del lado del cliente, era payload/parseo desperdiciado.
+
+**Qué se implementó:**
+- Se agregó `_filter_tv_format(data)` (api.py, antes de `get_recent_episodes`): list comprehension que se queda solo con items donde `media.format == "TV"`.
+- Se aplica dentro de `get_recent_episodes()`, después de leer de cache o de fetch fresco, antes de `_recompute_time_until_airing`. **No se filtra en `/recent-episodes-old`** — ese endpoint sigue devolviendo los 124 items con todos los formatos, intacto, como copia de referencia.
+- No afecta el cache en Redis: se sigue cacheando la data cruda completa (los 124 items sin filtrar), el filtro se aplica solo al servir la respuesta — así si en el futuro se necesita otro formato desde otro endpoint/consumidor, la data completa sigue disponible sin re-pedirle a Miruro.
+
+**Verificado en local:** `/recent-episodes` → 72 items, todos `format: "TV"`. `/recent-episodes-old` → 124 items, formatos mixtos (`TV`, `ONA`, `TV_SHORT`, `MOVIE`, `SPECIAL`, `MUSIC`), sin cambios.
+
+### Fix: la app siempre mostraba "último episodio - 1"
+**Archivo modificado:** `api.py`
+
+**Motivo:** el usuario reportó que su app Android siempre muestra el episodio anterior al real. Su Kotlin calcula el episodio a mostrar así:
+```kotlin
+episodeAux = episode.getJSONObject("nextAiringEpisode").getInt("episode")
+if (episodeAux > 1) episodeAux -= 1
+```
+Asume que `media.nextAiringEpisode.episode` siempre apunta al episodio siguiente al que ya salió (de ahí el `-1`). Se verificó sobre los 72 items `TV` de `/recent-episodes-old` que esto **no siempre es cierto**: 37/72 sí traían `nextAiringEpisode.episode == episode + 1` (la resta da bien), pero **34/72 traían `nextAiringEpisode.episode == episode`** (mismo valor, sin avanzar) — ahí la resta deja a la app mostrando un episodio menos del real. 1 item no tenía `nextAiringEpisode` (show `FINISHED`), ese caso ya lo maneja bien el Kotlin sin restar nada.
+
+Es la misma raíz que el bug de `timeUntilAiring`: el snapshot que cachea Miruro no avanza `nextAiringEpisode` en sincronía con la hora real de emisión — para shows cuyo episodio salió después de que Miruro tomó su snapshot, ese campo se queda pegado en el mismo número que `episode` en vez de avanzar al siguiente. Ejemplo verificado: BLACK TORCH ep7, `nextAiringEpisode.episode` venía en `7` (igual, no `8`) — la app mostraba episodio 6.
+
+**Qué se implementó:**
+- Se agregó `_fix_next_airing_episode(data)` (api.py, antes de `get_recent_episodes`): para cada item, fuerza `media.nextAiringEpisode.episode = item["episode"] + 1`, sin importar el valor que traiga Miruro. No toca items sin `nextAiringEpisode` (los deja como vienen).
+- Se llama al final de la cadena en `get_recent_episodes()` (después de `_filter_tv_format` y `_recompute_time_until_airing`), tanto en el camino de cache-hit como en el de fetch fresco. `/recent-episodes-old` no se toca.
+
+**Verificado en local:** de los 72 items `TV`, los 72 quedan con `nextAiringEpisode.episode == episode + 1` (0 incorrectos). BLACK TORCH: `episode: 7`, `nextAiringEpisode.episode: 8` → la app calcularía `8 - 1 = 7`, correcto.
