@@ -73,8 +73,10 @@ REDIS_TTL_SECONDS = 25 * 60  # safety net: if nothing refreshes it in time, api.
 
 # Same literal key as api.py's _trigger_reactive_cf_refresh — set there the moment a break is
 # first detected, consumed here on successful recovery to log/report the REAL, measured
-# break-to-recovery time instead of an estimate.
-REDIS_KEY_BREAK_DETECTED_AT = "miruro_api:cf_refresher:break_detected_at"
+# break-to-recovery time instead of an estimate. Topic-scoped (bug fixed 2026-09-09): a flat
+# shared key here meant two independent groups breaking at once would clobber/read each other's
+# break-detection timestamp.
+REDIS_KEY_BREAK_DETECTED_AT = f"miruro_api:cf_refresher:break_detected_at:{FALLBACK_TOPIC}"
 
 # --listen mode trigger (see api.py's _trigger_reactive_cf_refresh, which publishes/sets both of
 # these alongside the home server's own one-shot attempt).

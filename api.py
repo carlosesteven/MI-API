@@ -246,7 +246,14 @@ async def _get_pipe_headers() -> dict:
 # once: a cookie can die well before its TTL). On that signal we kick a forced re-solve in the
 # background immediately, instead of waiting for the next timer tick (up to 15 min away).
 BASE_DIR = Path(__file__).resolve().parent
-CF_REFRESHER_TRIGGER_LOCK_KEY = "miruro_api:cf_refresher:reactive_trigger_lock"
+# Topic-scoped like everything else touching a group's own cookie (see REDIS_KEY_CF_CLEARANCE
+# above) — NOT scoped originally (bug, found 2026-09-09): a flat, shared key here meant that if
+# two independent groups broke at the same moment, only ONE of them could win this lock, and the
+# LOSING group's _trigger_reactive_cf_refresh returned immediately — no local browser attempt, no
+# Telegram alert, no fallback ping to its own Mac/Windows, no lifetime sample — for that entire
+# group, until the next failing request 60s later. Fixed by giving every group its own lock and
+# its own break-detected timestamp, same as its own cookie.
+CF_REFRESHER_TRIGGER_LOCK_KEY = f"miruro_api:cf_refresher:reactive_trigger_lock:{FALLBACK_TOPIC}"
 CF_REFRESHER_TRIGGER_LOCK_TTL = 60  # de-dupes concurrent failing requests into one browser run
 # Only set on the home node's own .env — no hardcoded path with a real username in the repo.
 # Unset (any cloud node, or the home node before Hermes is configured) means os.path.exists("")
@@ -256,7 +263,7 @@ HERMES_BIN = os.getenv("HERMES_BIN_PATH", "")
 # Shared with cf_refresher.py (same literal key) — real, measured break-to-recovery timing
 # instead of anyone's guess. See _trigger_reactive_cf_refresh (sets it) and cf_refresher.py's
 # main() (reads/clears it and reports the actual elapsed seconds on successful recovery).
-REDIS_KEY_BREAK_DETECTED_AT = "miruro_api:cf_refresher:break_detected_at"
+REDIS_KEY_BREAK_DETECTED_AT = f"miruro_api:cf_refresher:break_detected_at:{FALLBACK_TOPIC}"
 
 # How long a cookie actually lasted before this group's traffic hit a real 403 — the fixed
 # 25-min REDIS_TTL_SECONDS cap in cf_refresher.py says nothing about how long a cookie is
