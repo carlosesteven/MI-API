@@ -184,6 +184,17 @@ each hitting its own stale local copy at a slightly different moment. Confirmed 
 (see `SESSION_LOG.md`) and fixed by giving every group its own cookie key, full stop — a group
 must live or die entirely on its own cookie, with zero coupling to any other group's.
 
+**Every piece of shared state for a group must be topic-scoped, no exceptions** — found
+2026-09-09: `CF_REFRESHER_TRIGGER_LOCK_KEY` and `REDIS_KEY_BREAK_DETECTED_AT` were left as flat,
+global keys during the fix above, missed because they weren't part of the visible "groups
+triggering each other" symptom. Consequence: two groups breaking at the same moment meant only
+one could win the shared reactive-trigger lock — the LOSING group's
+`_trigger_reactive_cf_refresh` returned immediately with no local browser attempt, no Telegram
+alert, no fallback ping to its own Mac/Windows, and no lifetime sample, for that entire group,
+until its next failing request 60s later. Both are now `f"...:{FALLBACK_TOPIC}"` too. When adding
+any NEW piece of shared per-group state in the future, scope it by `FALLBACK_TOPIC` from the
+start — don't wait for a visible symptom to notice it wasn't.
+
 **Setup on a new machine** (Mac, Windows, or another Linux box — needs to be joined to the same
 ZeroTier network as the home node, to reach both Redis and `NOTIFY_RELAY_URL`):
 ```bash
