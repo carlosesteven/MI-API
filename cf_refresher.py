@@ -245,6 +245,12 @@ def _encode_pipe_request(payload: dict) -> str:
 # rotate independently through real, currently-working pools, and — via Redis lists shared
 # across every node/group — never repeat one of the last 3 values picked by ANYONE, anywhere in
 # the fleet.
+# Confirmed by the user's own separate anime app (2026-09-09) that "sources" genuinely 403s/444s
+# sometimes for reasons that have NOTHING to do with Cloudflare/cf_clearance — Miruro simply
+# hasn't scraped/has no working source for that specific episode+provider combo yet. Same flag
+# as api.py's CANARY_CHECK_SOURCES — set "true" to re-enable if skipping it blinds this to real
+# cookie breaks that only show up on "sources" (confirmed to happen too — real trade-off).
+CANARY_CHECK_SOURCES = os.getenv("CANARY_CHECK_SOURCES", "false").lower() == "true"
 _VERIFY_CATEGORY = "sub"
 _CANARY_ANILIST_ID_POOL = [
     178789, 196187, 135865, 185874, 207141, 187538, 180136, 210031, 103303, 187260,
@@ -362,6 +368,9 @@ async def _cookie_actually_works(cookie_str: str, headers: dict, verbose: bool =
         raw_episode_id = _translate_id(eps[0]["id"]) if eps else None
         if not raw_episode_id:
             return True  # episodes canary passed and there's nothing else we can check safely
+
+        if not CANARY_CHECK_SOURCES:
+            return True  # episodes canary passed and sources is deliberately not checked
 
         sources_payload = {
             "path": "sources",
@@ -579,7 +588,8 @@ async def run_refresh_once(force: bool = False, dry_run: bool = False) -> bool:
             if failure_reason:
                 print(f"\nFAILED: {failure_reason}")
             else:
-                print(f"\nOK — cookie works for episodes AND sources ({len(headers)} headers captured).")
+                checked = "episodes AND sources" if CANARY_CHECK_SOURCES else "episodes (sources check disabled — CANARY_CHECK_SOURCES=false)"
+                print(f"\nOK — cookie works for {checked} ({len(headers)} headers captured).")
                 print("Nothing was written to Redis and no one was notified — this was a dry run.")
             return not failure_reason
 

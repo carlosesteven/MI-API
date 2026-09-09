@@ -361,6 +361,16 @@ def _notify_telegram(message: str) -> None:
 # limited/flagged. Both now rotate independently through real, currently-working pools, and —
 # via Redis lists shared across every node/group — never repeat one of the last 3 values picked
 # by ANYONE, anywhere in the fleet.
+# IMPORTANT #4: confirmed by the user's own separate anime app (2026-09-09) that this pipe's
+# "sources" path genuinely 403s/444s sometimes for reasons that have NOTHING to do with
+# Cloudflare/cf_clearance — Miruro simply hasn't scraped/has no working source for that specific
+# episode+provider combo yet. That's real, independent noise on top of whatever Cloudflare-trust
+# noise already existed, and it's indistinguishable from a real cookie failure at this layer.
+# CANARY_CHECK_SOURCES lets the "sources" half of this canary be switched off (default: off, per
+# an explicit experiment request) without deleting the check — set to "true" to re-enable it if
+# skipping it turns out to blind the system to real cookie breaks that only show up on "sources"
+# (confirmed to happen too, see IMPORTANT #1 above — this is a real trade-off, not a free lunch).
+CANARY_CHECK_SOURCES = os.getenv("CANARY_CHECK_SOURCES", "false").lower() == "true"
 _CANARY_SOURCES_CATEGORY = "sub"
 _CANARY_ANILIST_ID_POOL = [
     178789, 196187, 135865, 185874, 207141, 187538, 180136, 210031, 103303, 187260,
@@ -473,6 +483,9 @@ async def _cf_clearance_actually_broken() -> bool:
         raw_episode_id = eps[0]["id"] if eps else None
         if not raw_episode_id:
             return False  # can't build the sources canary — don't block recovery on it
+
+        if not CANARY_CHECK_SOURCES:
+            return False  # episodes canary passed and sources is deliberately not checked
 
         sources_payload = {
             "path": "sources",
