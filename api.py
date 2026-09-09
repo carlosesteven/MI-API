@@ -258,6 +258,14 @@ HERMES_BIN = os.getenv("HERMES_BIN_PATH", "")
 # main() (reads/clears it and reports the actual elapsed seconds on successful recovery).
 REDIS_KEY_BREAK_DETECTED_AT = "miruro_api:cf_refresher:break_detected_at"
 
+# How long a cookie actually lasted before this group's traffic hit a real 403 — the fixed
+# 25-min REDIS_TTL_SECONDS cap in cf_refresher.py says nothing about how long a cookie is
+# ACTUALLY good for; a cookie can (and does) die well before that. Recorded once per detected
+# outage (gated by the same CF_REFRESHER_TRIGGER_LOCK_KEY dedup as everything else here) so a
+# real average can inform a future proactive-refresh interval instead of guessing. Per
+# FALLBACK_TOPIC group — different groups' IPs may behave differently.
+REDIS_KEY_COOKIE_LIFETIME_SAMPLES = f"miruro_api:cf_clearance:lifetime_samples:{FALLBACK_TOPIC}"
+
 # Second-tier fallback: any machine running `cf_refresher.py --listen` (a Mac, an extra Ubuntu
 # box, a Windows box — real Chrome, a non-datacenter IP Cloudflare trusts far more than this
 # server's, which gets more suspicious the more it auto-solves challenges). REDIS_KEY_NEED_MAC_REFRESH
@@ -493,6 +501,22 @@ async def _trigger_reactive_cf_refresh() -> None:
     # cf_refresher.py); the 1h expiry here is just a safety net against it never getting cleared.
     try:
         await redis_client.set(REDIS_KEY_BREAK_DETECTED_AT, str(time.time()), nx=True, ex=3600)
+    except Exception:
+        pass
+
+    # Real, measured lifetime: how long the cookie that JUST failed actually lasted, from the
+    # moment it was written to the moment a real request confirmed it dead — not the fixed
+    # 25-min TTL cap, which says nothing about actual durability. Gated by the same got_lock
+    # dedup above, so one outage records exactly one sample, not one per failing request.
+    try:
+        stale_blob = await redis_client.get(REDIS_KEY_CF_CLEARANCE)
+        if stale_blob:
+            stale_updated_at = json.loads(stale_blob).get("updated_at")
+            if stale_updated_at:
+                lifetime_seconds = time.time() - stale_updated_at
+                await redis_client.rpush(REDIS_KEY_COOKIE_LIFETIME_SAMPLES, lifetime_seconds)
+                await redis_client.ltrim(REDIS_KEY_COOKIE_LIFETIME_SAMPLES, -50, -1)
+                await redis_client.expire(REDIS_KEY_COOKIE_LIFETIME_SAMPLES, 30 * 24 * 3600)
     except Exception:
         pass
 
