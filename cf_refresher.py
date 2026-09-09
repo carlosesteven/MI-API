@@ -271,12 +271,14 @@ def _encode_pipe_request(payload: dict) -> str:
 # hasn't scraped/has no working source for that specific episode+provider combo yet. Same flag
 # as api.py's CANARY_CHECK_SOURCES — set "true" to re-enable if skipping it blinds this to real
 # cookie breaks that only show up on "sources" (confirmed to happen too — real trade-off). When
-# enabled: tries up to _CANARY_SOURCES_MAX_PROVIDERS_TO_TRY different providers before concluding
-# "doesn't work" — confirmed live 2026-09-09 that a single provider failing is unreliable
-# (scraping gaps unrelated to the cookie), but ALL providers failing at once on a freshly-solved
-# cookie is real signal.
+# enabled: tries every available provider before concluding "doesn't work" — confirmed live
+# 2026-09-09 that a single provider failing is unreliable (scraping gaps unrelated to the
+# cookie), but ALL providers failing at once on a freshly-solved cookie is real signal. A cap
+# below the full pool size risks a false "doesn't work" verdict purely from bad luck on which
+# few got randomly picked (explicit user requirement 2026-09-09: "requiero todos... puede que
+# siempre caiga en los que falla") — None means "try every provider that has this episode".
 CANARY_CHECK_SOURCES = os.getenv("CANARY_CHECK_SOURCES", "false").lower() == "true"
-_CANARY_SOURCES_MAX_PROVIDERS_TO_TRY = 3
+_CANARY_SOURCES_MAX_PROVIDERS_TO_TRY = None
 _VERIFY_CATEGORY = "sub"
 _CANARY_ANILIST_ID_POOL = [
     178789, 196187, 135865, 185874, 207141, 187538, 180136, 210031, 103303, 187260,
