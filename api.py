@@ -305,6 +305,16 @@ NODE_ID = os.getenv("NODE_ID") or socket.gethostname()
 # ZeroTier address (e.g. http://10.x.x.x:8848) in the .env of the 4 cloud nodes.
 NOTIFY_RELAY_URL = os.getenv("NOTIFY_RELAY_URL", "").rstrip("/")
 
+# Per-type opt-in for Telegram alerts (added 2026-09-09 — the alerting used to be deliberately
+# unfiltered/spammy on purpose, but the user now wants only the escalation alert by default).
+# Every node that can trigger a notification needs this same flag set the same way in its own
+# .env, or it'll keep sending that type unconditionally on old code — this isn't just a home-node
+# setting. NOTIFY_ON_ESCALATION defaults true (the one alert that actually means "nobody fixed
+# this, a human needs to step in"); the others default false since they fire on every single
+# transient break/retry, which is normal operation, not something needing a human's attention.
+NOTIFY_ON_BREAK_DETECTED = os.getenv("NOTIFY_ON_BREAK_DETECTED", "false").lower() == "true"
+NOTIFY_ON_ESCALATION = os.getenv("NOTIFY_ON_ESCALATION", "true").lower() == "true"
+
 
 def _notify_telegram_sync(message: str) -> None:
     """Best-effort, matches cf_refresher.py's notify_telegram — never let this crash a request."""
@@ -570,11 +580,12 @@ async def _trigger_reactive_cf_refresh() -> None:
     except Exception:
         pass
 
-    await _notify_telegram(
-        f"⚠️ MI-API [nodo: {NODE_ID}]: el pipe de Miruro rechazó la cookie actual "
-        f"(403 en vivo, {_now_str()}). Disparando un refresh forzado ahora mismo — si en ~1 min "
-        "sigue caído, necesito una cf_clearance nueva desde tu equipo."
-    )
+    if NOTIFY_ON_BREAK_DETECTED:
+        await _notify_telegram(
+            f"⚠️ MI-API [nodo: {NODE_ID}]: el pipe de Miruro rechazó la cookie actual "
+            f"(403 en vivo, {_now_str()}). Disparando un refresh forzado ahora mismo — si en ~1 min "
+            "sigue caído, necesito una cf_clearance nueva desde tu equipo."
+        )
     try:
         subprocess.Popen(
             ["xvfb-run", "-a", str(BASE_DIR / "venv" / "bin" / "python"),
@@ -610,7 +621,7 @@ async def _escalate_if_still_broken() -> None:
         still_broken = await redis_client.exists(REDIS_KEY_BREAK_DETECTED_AT)
     except Exception:
         return  # can't tell either way — don't false-alarm on a Redis hiccup
-    if still_broken:
+    if still_broken and NOTIFY_ON_ESCALATION:
         await _notify_telegram(
             f"🔴 MI-API [nodo: {NODE_ID}]: siguen sin resolverlo — ni el refresh automático de "
             f"este servidor ni el Mac lo arreglaron en los últimos {MAC_ESCALATION_TIMEOUT_SECONDS}s "

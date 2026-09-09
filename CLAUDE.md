@@ -92,10 +92,19 @@ this to work reliably, both found the hard way (see `SESSION_LOG.md`, sessions 2
   non-headless-but-still-automated browser can't solve), the service **stays down** — there's no
   further automatic fallback. A human has to solve the challenge in a real browser and hand the
   `cf_clearance` + full header set over to be pushed into Redis manually.
-- **Alerting is intentionally NOT debounced** — every failed forced-refresh attempt sends a
-  Telegram message (capped at ~once/minute by the 60s trigger lock, not by any cooldown on the
-  alert itself). This is deliberate: it's a critical service with apps depending on uptime: the
-  user wants to be spammed, not softly notified once.
+- **Alerting is per-type opt-in, not global** (revised 2026-09-09 — this was originally
+  deliberately unfiltered/spammy, but the user found that too noisy in practice). Four distinct
+  alert types exist, each gated by its own `NOTIFY_ON_*` env var: `NOTIFY_ON_BREAK_DETECTED`
+  (api.py, fires on every real live 403 — default `false`), `NOTIFY_ON_ESCALATION` (api.py,
+  fires only if NEITHER this node's own attempt NOR any fallback node fixed it within
+  `MAC_ESCALATION_TIMEOUT_SECONDS` — default **`true`**, this is the one alert meant to survive
+  the cut, since it's the only one that means "a human needs to act"), `NOTIFY_ON_SOLVE_FAILURE`
+  (cf_refresher.py, a solve attempt exhausted `MAX_SOLVE_ATTEMPTS` — default `false`), and
+  `NOTIFY_ON_RECOVERY` (cf_refresher.py, a break was successfully closed out — default `false`).
+  Every node that can trigger any of these needs the SAME values set in its own `.env` — a node
+  still running old code (no flag check at all) keeps sending every type unconditionally
+  regardless of what any other node's `.env` says, since the gating logic itself has to be
+  present in the code it's running.
 
 ### `NOTIFY_RELAY_URL` — Telegram alerts from the 4 cloud nodes
 

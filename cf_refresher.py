@@ -106,6 +106,14 @@ API_KEY = os.getenv("API_KEY")
 # Same NODE_ID convention as api.py — set per-node in .env, falls back to the OS hostname.
 NODE_ID = os.getenv("NODE_ID") or socket.gethostname()
 
+# Per-type opt-in for Telegram alerts — same flags as api.py's NOTIFY_ON_BREAK_DETECTED/
+# NOTIFY_ON_ESCALATION. Every node running --listen or a proactive/reactive one-shot needs these
+# set the same way in its own .env, or it keeps sending these two types unconditionally on old
+# code. Both default false: a solve failure or a recovery are normal, frequent, expected events —
+# only the escalation alert in api.py (nobody fixed it) defaults to on.
+NOTIFY_ON_SOLVE_FAILURE = os.getenv("NOTIFY_ON_SOLVE_FAILURE", "false").lower() == "true"
+NOTIFY_ON_RECOVERY = os.getenv("NOTIFY_ON_RECOVERY", "false").lower() == "true"
+
 
 def notify_telegram(message: str) -> None:
     """Best-effort — a failed notification must never crash the refresher."""
@@ -606,11 +614,12 @@ async def run_refresh_once(force: bool = False, dry_run: bool = False) -> bool:
             print(f"[cf_refresher] FAILED after {MAX_SOLVE_ATTEMPTS} attempts: {failure_reason}", file=sys.stderr)
             ttl = await _current_ttl()
             vigencia = f"la cookie actual vence en ~{ttl // 60} min" if ttl and ttl > 0 else "no hay ninguna cookie vigente en este momento"
-            notify_telegram(
-                f"⚠️ MI-API [nodo: {NODE_ID}]: no logré una cookie que funcione de verdad tras "
-                f"{MAX_SOLVE_ATTEMPTS} intentos ({failure_reason}). {vigencia}. Generá un "
-                "cf_clearance nuevo desde tu equipo (misma IP) y pasámelo para que lo aplique."
-            )
+            if NOTIFY_ON_SOLVE_FAILURE:
+                notify_telegram(
+                    f"⚠️ MI-API [nodo: {NODE_ID}]: no logré una cookie que funcione de verdad tras "
+                    f"{MAX_SOLVE_ATTEMPTS} intentos ({failure_reason}). {vigencia}. Generá un "
+                    "cf_clearance nuevo desde tu equipo (misma IP) y pasámelo para que lo aplique."
+                )
             return False
 
         payload = {
@@ -640,10 +649,11 @@ async def run_refresh_once(force: bool = False, dry_run: bool = False) -> bool:
         if break_detected_at:
             elapsed = time.time() - float(break_detected_at)
             print(f"[cf_refresher] RECOVERY TIME: {elapsed:.1f}s (medido, no estimado)")
-            notify_telegram(
-                f"✅ MI-API [nodo: {NODE_ID}]: recuperado. Tiempo real roto→arreglado: "
-                f"{elapsed:.0f}s."
-            )
+            if NOTIFY_ON_RECOVERY:
+                notify_telegram(
+                    f"✅ MI-API [nodo: {NODE_ID}]: recuperado. Tiempo real roto→arreglado: "
+                    f"{elapsed:.0f}s."
+                )
         return True
 
 
