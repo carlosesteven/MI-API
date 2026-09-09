@@ -306,7 +306,7 @@ NODE_ID = os.getenv("NODE_ID") or socket.gethostname()
 NOTIFY_RELAY_URL = os.getenv("NOTIFY_RELAY_URL", "").rstrip("/")
 
 
-def _notify_telegram(message: str) -> None:
+def _notify_telegram_sync(message: str) -> None:
     """Best-effort, matches cf_refresher.py's notify_telegram — never let this crash a request."""
     if os.path.exists(HERMES_BIN):
         try:
@@ -332,6 +332,17 @@ def _notify_telegram(message: str) -> None:
         )
     except Exception:
         pass
+
+
+async def _notify_telegram(message: str) -> None:
+    """Runs the actual (blocking) send on a worker thread. Found live 2026-09-09: this server
+    runs uvicorn with a single worker/single event loop (no --workers set), so calling the
+    blocking subprocess.run/httpx.post directly from request-handling code stalled EVERY other
+    concurrent request for up to 10s (its own timeout) every time a real 403 fired an alert — a
+    single episode page opening 6-8 parallel source requests meant one break notification could
+    visibly slow down every other in-flight request, user-facing, for up to 24h before this was
+    caught."""
+    await asyncio.to_thread(_notify_telegram_sync, message)
 
 
 # Known-good, stable canary queries for validating whether cf_clearance itself is actually dead.
@@ -559,7 +570,7 @@ async def _trigger_reactive_cf_refresh() -> None:
     except Exception:
         pass
 
-    _notify_telegram(
+    await _notify_telegram(
         f"⚠️ MI-API [nodo: {NODE_ID}]: el pipe de Miruro rechazó la cookie actual "
         f"(403 en vivo, {_now_str()}). Disparando un refresh forzado ahora mismo — si en ~1 min "
         "sigue caído, necesito una cf_clearance nueva desde tu equipo."
@@ -600,7 +611,7 @@ async def _escalate_if_still_broken() -> None:
     except Exception:
         return  # can't tell either way — don't false-alarm on a Redis hiccup
     if still_broken:
-        _notify_telegram(
+        await _notify_telegram(
             f"🔴 MI-API [nodo: {NODE_ID}]: siguen sin resolverlo — ni el refresh automático de "
             f"este servidor ni el Mac lo arreglaron en los últimos {MAC_ESCALATION_TIMEOUT_SECONDS}s "
             f"({_now_str()}). Necesito una cf_clearance manual ya."
@@ -1137,7 +1148,7 @@ async def internal_notify(payload: dict):
     message = payload.get("message")
     if not message:
         raise HTTPException(status_code=400, detail="message required")
-    _notify_telegram(message)
+    await _notify_telegram(message)
     return {"status": "ok"}
 
 
