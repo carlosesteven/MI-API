@@ -417,15 +417,23 @@ async def _cf_clearance_actually_broken() -> bool:
     async def _raw_pipe_call(payload: dict):
         # A 429 means "rate limited right now" (e.g. several nodes' canary checks landing at
         # once), not "cookie is broken" — confirmed live: a cookie the Mac fallback had just
-        # solved fresh got misread as dead this way and triggered a false alarm. Only treat a
-        # non-429 failure (403, etc.) as a real signal; a 429 gets a couple of backed-off
-        # retries first.
+        # solved fresh got misread as dead this way and triggered a false alarm.
+        #
+        # A 444 on "sources" specifically turned out to be the SAME kind of false signal —
+        # confirmed live 2026-09-07/08: a freshly-solved, genuinely working cookie (passed
+        # "episodes" clean) still got a 444 on "sources" with a brand-new anilistId+provider
+        # combo, on more than one occasion, on more than one IP. cf_refresher.py's own fix for
+        # this is retrying with an entirely new browser — that's not available here (this checks
+        # an already-stored cookie, not a fresh solve), but the same "don't trust one flaky
+        # sources hit" principle applies: retry a 444 here too before concluding the cookie
+        # itself is actually dead. Only a repeated non-{429,444} failure (or a 444 that doesn't
+        # clear after retries) is treated as a real signal.
         url = f"{MIRURO_PIPE_URL}?e={_encode_pipe_request(payload)}"
         delay = 3
         async with httpx.AsyncClient(timeout=10, http2=True) as client:
             for attempt in range(3):
                 res = await client.get(url, headers=headers)
-                if res.status_code != 429:
+                if res.status_code not in (429, 444):
                     break
                 await asyncio.sleep(delay)
                 delay *= 2
@@ -584,17 +592,16 @@ async def _pipe_get(encoded_req: str) -> dict:
     # of XHR), not the header/cookie content — those matched byte-for-byte in every failing
     # attempt too. http2=True requires the `h2` package (see requirements.txt).
     if "cookie" in headers:
-        # A 429 means "rate limited right now" (e.g. our own verification calls and real
-        # traffic landing close together), not "cookie is broken" — confirmed live: a real
-        # request here got a transient 429 that cleared 5s later with the exact same cookie.
-        # Retry with backoff before surfacing it to the client; only a non-429 failure (403,
-        # etc.) is treated as a real signal below.
+        # A 429 (rate limited) or a 444 on "sources" (confirmed live: happens even with a
+        # genuinely working cookie — Cloudflare/Miruro flaking on that specific path, not the
+        # cookie being dead) both mean "retry before trusting this", not "cookie is broken".
+        # Only a non-{429,444} failure (403, etc.) is treated as a real signal below.
         try:
             delay = 2
             async with httpx.AsyncClient(timeout=20, http2=True) as client:
                 for attempt in range(3):
                     res = await client.get(url, headers=headers)
-                    if res.status_code != 429:
+                    if res.status_code not in (429, 444):
                         break
                     await asyncio.sleep(delay)
                     delay *= 2
@@ -628,7 +635,7 @@ async def _pipe_get(encoded_req: str) -> dict:
         delay = 2
         for attempt in range(3):
             res = await pipe_session.get(url, headers=headers)
-            if res.status_code != 429:
+            if res.status_code not in (429, 444):
                 break
             await asyncio.sleep(delay)
             delay *= 2
