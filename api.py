@@ -52,6 +52,14 @@ REDIS_KEY_EPISODES_PREFIX = "miruro_api:cache:episodes"
 FALLBACK_TOPIC = os.getenv("FALLBACK_TOPIC", "default")
 REDIS_KEY_CF_CLEARANCE = f"miruro_api:cf_clearance:{FALLBACK_TOPIC}"
 
+# Populated by cf_refresher.py's PROACTIVE_QUEUE_INTERVAL_SECONDS loop on --listen fallback
+# nodes (Mac, Windows) — a small pool of pre-validated spare cookies, never touched by this
+# server itself. Consumer side (added 2026-09-09): when the PRIMARY cookie fails a live request
+# with a cookie-related status, try each spare here (fast, no browser launch) before giving up —
+# fits inside the app's own client-side timeout (confirmed: Android/Volley kills at 10s), unlike
+# waiting ~20-30s for a fresh solve.
+REDIS_KEY_CF_CLEARANCE_QUEUE = f"miruro_api:cf_clearance:queue:{FALLBACK_TOPIC}"
+
 # How long to trust an in-memory copy of the cf_clearance blob before re-checking Redis. Kept
 # short on purpose — a stale in-memory copy right after a manual push looked exactly like a
 # still-broken service during testing (confirmed live: same cookie, 403 through the cached
@@ -629,6 +637,63 @@ async def _escalate_if_still_broken() -> None:
         )
 
 
+# Traceable, real stats for the spare-cookie queue fallback (added 2026-09-09, explicit user
+# requirement: "requiero cifras... deben ser trazables. que no me vayas a mentir" — no claiming
+# this helps or hurts without a way to check it with real numbers). A Redis hash, one field per
+# outcome, incremented every time this path actually runs. Query with HGETALL
+# miruro_api:spare_queue:stats:{FALLBACK_TOPIC} — success rate = successes / attempts.
+REDIS_KEY_SPARE_QUEUE_STATS = f"miruro_api:spare_queue:stats:{FALLBACK_TOPIC}"
+
+
+async def _try_spare_cookies(url: str):
+    """Called only when the PRIMARY cookie just failed a live request with a cookie-related
+    status (403/444). Tries each spare in the queue (newest first), ONE fast attempt each (no
+    429/444 backoff retry — a spare is either good right now or it isn't, and the whole point is
+    staying inside the client's own timeout). Returns decoded data on the first spare that
+    works, or None if none do / none exist. Every branch is wrapped so a bug here can NEVER take
+    down a request that would otherwise have correctly failed on its own."""
+    try:
+        spares_raw = await redis_client.lrange(REDIS_KEY_CF_CLEARANCE_QUEUE, 0, -1)
+    except Exception:
+        return None
+
+    if not spares_raw:
+        try:
+            await redis_client.hincrby(REDIS_KEY_SPARE_QUEUE_STATS, "no_spares_available", 1)
+        except Exception:
+            pass
+        return None
+
+    try:
+        await redis_client.hincrby(REDIS_KEY_SPARE_QUEUE_STATS, "attempts", 1)
+    except Exception:
+        pass
+
+    for spare_raw in reversed(spares_raw):  # newest first
+        try:
+            spare = json.loads(spare_raw)
+            spare_headers = dict(spare.get("headers", {}))
+            spare_headers["cookie"] = spare["cookie"]
+            spare_headers.setdefault("referer", HEADERS.get("Referer"))
+            async with httpx.AsyncClient(timeout=10, http2=True) as client:
+                res = await client.get(url, headers=spare_headers)
+            if res.status_code == 200:
+                data = _decode_pipe_response(res.text.strip())
+                try:
+                    await redis_client.hincrby(REDIS_KEY_SPARE_QUEUE_STATS, "successes", 1)
+                except Exception:
+                    pass
+                return data
+        except Exception:
+            continue
+
+    try:
+        await redis_client.hincrby(REDIS_KEY_SPARE_QUEUE_STATS, "all_spares_failed", 1)
+    except Exception:
+        pass
+    return None
+
+
 async def _pipe_get(encoded_req: str) -> dict:
     """GET the pipe and decode the response, replacing the session and retrying once on any
     failure (connection error, non-200 status, or a corrupted/truncated response body)."""
@@ -669,6 +734,13 @@ async def _pipe_get(encoded_req: str) -> dict:
         if res.status_code != 200:
             if res.status_code == 403:
                 await _trigger_reactive_cf_refresh()
+            if res.status_code in (403, 444):
+                try:
+                    spare_result = await _try_spare_cookies(url)
+                except Exception:
+                    spare_result = None
+                if spare_result is not None:
+                    return spare_result
             status = res.status_code if 100 <= res.status_code <= 599 else 502
             raise HTTPException(status_code=status, detail="Pipe request failed")
         try:
@@ -703,6 +775,13 @@ async def _pipe_get(encoded_req: str) -> dict:
         # nothing usable is cached, kick a forced re-solve instead of staying down silently.
         if res.status_code == 403:
             await _trigger_reactive_cf_refresh()
+        if res.status_code in (403, 444):
+            try:
+                spare_result = await _try_spare_cookies(url)
+            except Exception:
+                spare_result = None
+            if spare_result is not None:
+                return spare_result
         status = res.status_code if 100 <= res.status_code <= 599 else 502
         raise HTTPException(status_code=status, detail="Pipe request failed")
     try:
