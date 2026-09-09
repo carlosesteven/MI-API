@@ -370,7 +370,12 @@ def _notify_telegram(message: str) -> None:
 # an explicit experiment request) without deleting the check — set to "true" to re-enable it if
 # skipping it turns out to blind the system to real cookie breaks that only show up on "sources"
 # (confirmed to happen too, see IMPORTANT #1 above — this is a real trade-off, not a free lunch).
+#
+# When enabled: tries up to this many DIFFERENT providers before concluding "broken" — confirmed
+# live 2026-09-09 that a single provider failing is unreliable (scraping gaps unrelated to the
+# cookie), but ALL providers failing at once on a freshly-solved cookie is real signal.
 CANARY_CHECK_SOURCES = os.getenv("CANARY_CHECK_SOURCES", "false").lower() == "true"
+_CANARY_SOURCES_MAX_PROVIDERS_TO_TRY = 3
 _CANARY_SOURCES_CATEGORY = "sub"
 _CANARY_ANILIST_ID_POOL = [
     178789, 196187, 135865, 185874, 207141, 187538, 180136, 210031, 103303, 187260,
@@ -381,7 +386,6 @@ _CANARY_ANILIST_ID_POOL = [
 # Confirmed live against anilistId=178789: all six have real "sub" episodes available.
 _CANARY_PROVIDER_POOL = ["ally", "pewe", "bee", "kiwi", "hop", "bonk"]
 REDIS_KEY_CANARY_RECENT_IDS = "miruro_api:canary:recent_ids"
-REDIS_KEY_CANARY_RECENT_PROVIDERS = "miruro_api:canary:recent_providers"
 
 
 async def _pick_avoiding_recent(redis_key: str, pool: list, cast=str):
@@ -407,10 +411,6 @@ async def _pick_avoiding_recent(redis_key: str, pool: list, cast=str):
 
 async def _pick_canary_anilist_id() -> int:
     return await _pick_avoiding_recent(REDIS_KEY_CANARY_RECENT_IDS, _CANARY_ANILIST_ID_POOL, int)
-
-
-async def _pick_canary_provider() -> str:
-    return await _pick_avoiding_recent(REDIS_KEY_CANARY_RECENT_PROVIDERS, _CANARY_PROVIDER_POOL, str)
 
 
 def _cache_bust() -> str:
@@ -459,7 +459,6 @@ async def _cf_clearance_actually_broken() -> bool:
         return _decode_pipe_response(res.text.strip())
 
     canary_anilist_id = await _pick_canary_anilist_id()
-    canary_provider = await _pick_canary_provider()
     episodes_payload = {
         "path": "episodes", "method": "GET",
         "query": {"anilistId": canary_anilist_id, "_cb": _cache_bust()},
@@ -472,36 +471,48 @@ async def _cf_clearance_actually_broken() -> bool:
     if episodes_data is None:
         return True
 
+    if not CANARY_CHECK_SOURCES:
+        return False  # episodes canary passed and sources is deliberately not checked
+
     try:
         _deep_translate(episodes_data)
-        eps = (
-            episodes_data.get("providers", {})
-            .get(canary_provider, {})
-            .get("episodes", {})
-            .get(_CANARY_SOURCES_CATEGORY, [])
-        )
-        raw_episode_id = eps[0]["id"] if eps else None
-        if not raw_episode_id:
-            return False  # can't build the sources canary — don't block recovery on it
+        providers_data = episodes_data.get("providers", {})
+        # Confirmed live 2026-09-09: a single provider failing "sources" is NOT reliable proof
+        # the cookie is broken — Miruro sometimes genuinely hasn't scraped a working source for
+        # ONE specific episode+provider combo (confirmed by the user's own separate anime app),
+        # independent of any Cloudflare/cookie problem. But confirmed the SAME day: a cookie only
+        # ~6 minutes old failed ALL SIX providers simultaneously for the same anime — that kind
+        # of across-the-board failure is real signal, not per-provider noise. So: try several
+        # DIFFERENT providers; only conclude "broken" if every single one tried fails. Any one
+        # passing is enough to call the cookie healthy.
+        available_providers = [
+            p for p in _CANARY_PROVIDER_POOL
+            if providers_data.get(p, {}).get("episodes", {}).get(_CANARY_SOURCES_CATEGORY, [])
+        ]
+        if not available_providers:
+            return False  # can't build any sources canary — don't block recovery on it
 
-        if not CANARY_CHECK_SOURCES:
-            return False  # episodes canary passed and sources is deliberately not checked
-
-        sources_payload = {
-            "path": "sources",
-            "method": "GET",
-            "query": {
-                "episodeId": base64.urlsafe_b64encode(raw_episode_id.encode()).decode().rstrip("="),
-                "provider": canary_provider,
-                "category": _CANARY_SOURCES_CATEGORY,
-                "anilistId": canary_anilist_id,
-                "_cb": _cache_bust(),
-            },
-            "body": None,
-            "version": "0.1.0",
-        }
-        sources_data = await _raw_pipe_call(sources_payload)
-        return sources_data is None
+        import random
+        random.shuffle(available_providers)
+        for provider in available_providers[:_CANARY_SOURCES_MAX_PROVIDERS_TO_TRY]:
+            raw_episode_id = providers_data[provider]["episodes"][_CANARY_SOURCES_CATEGORY][0]["id"]
+            sources_payload = {
+                "path": "sources",
+                "method": "GET",
+                "query": {
+                    "episodeId": base64.urlsafe_b64encode(raw_episode_id.encode()).decode().rstrip("="),
+                    "provider": provider,
+                    "category": _CANARY_SOURCES_CATEGORY,
+                    "anilistId": canary_anilist_id,
+                    "_cb": _cache_bust(),
+                },
+                "body": None,
+                "version": "0.1.0",
+            }
+            sources_data = await _raw_pipe_call(sources_payload)
+            if sources_data is not None:
+                return False  # at least one provider's sources worked — cookie is healthy
+        return True  # every provider tried failed — genuinely broken
     except Exception:
         return True
 

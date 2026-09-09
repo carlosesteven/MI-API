@@ -249,8 +249,13 @@ def _encode_pipe_request(payload: dict) -> str:
 # sometimes for reasons that have NOTHING to do with Cloudflare/cf_clearance — Miruro simply
 # hasn't scraped/has no working source for that specific episode+provider combo yet. Same flag
 # as api.py's CANARY_CHECK_SOURCES — set "true" to re-enable if skipping it blinds this to real
-# cookie breaks that only show up on "sources" (confirmed to happen too — real trade-off).
+# cookie breaks that only show up on "sources" (confirmed to happen too — real trade-off). When
+# enabled: tries up to _CANARY_SOURCES_MAX_PROVIDERS_TO_TRY different providers before concluding
+# "doesn't work" — confirmed live 2026-09-09 that a single provider failing is unreliable
+# (scraping gaps unrelated to the cookie), but ALL providers failing at once on a freshly-solved
+# cookie is real signal.
 CANARY_CHECK_SOURCES = os.getenv("CANARY_CHECK_SOURCES", "false").lower() == "true"
+_CANARY_SOURCES_MAX_PROVIDERS_TO_TRY = 3
 _VERIFY_CATEGORY = "sub"
 _CANARY_ANILIST_ID_POOL = [
     178789, 196187, 135865, 185874, 207141, 187538, 180136, 210031, 103303, 187260,
@@ -261,7 +266,6 @@ _CANARY_ANILIST_ID_POOL = [
 # Confirmed live against anilistId=178789: all six have real "sub" episodes available.
 _CANARY_PROVIDER_POOL = ["ally", "pewe", "bee", "kiwi", "hop", "bonk"]
 REDIS_KEY_CANARY_RECENT_IDS = "miruro_api:canary:recent_ids"
-REDIS_KEY_CANARY_RECENT_PROVIDERS = "miruro_api:canary:recent_providers"
 
 
 async def _pick_avoiding_recent(redis_key: str, pool: list, cast=str):
@@ -290,10 +294,6 @@ async def _pick_avoiding_recent(redis_key: str, pool: list, cast=str):
 
 async def _pick_canary_anilist_id() -> int:
     return await _pick_avoiding_recent(REDIS_KEY_CANARY_RECENT_IDS, _CANARY_ANILIST_ID_POOL, int)
-
-
-async def _pick_canary_provider() -> str:
-    return await _pick_avoiding_recent(REDIS_KEY_CANARY_RECENT_PROVIDERS, _CANARY_PROVIDER_POOL, str)
 
 
 def _cache_bust() -> str:
@@ -343,7 +343,6 @@ async def _cookie_actually_works(cookie_str: str, headers: dict, verbose: bool =
     exactly like the challenge never resolved at all."""
     try:
         canary_anilist_id = await _pick_canary_anilist_id()
-        canary_provider = await _pick_canary_provider()
         episodes_payload = {
             "path": "episodes", "method": "GET",
             "query": {"anilistId": canary_anilist_id, "_cb": _cache_bust()},
@@ -355,40 +354,50 @@ async def _cookie_actually_works(cookie_str: str, headers: dict, verbose: bool =
         if res.status_code != 200:
             return False
 
-        raw = res.text.strip()
-        raw += "=" * (4 - len(raw) % 4)
-        episodes_data = json.loads(gzip.decompress(base64.urlsafe_b64decode(raw)).decode())
-
-        eps = (
-            episodes_data.get("providers", {})
-            .get(canary_provider, {})
-            .get("episodes", {})
-            .get(_VERIFY_CATEGORY, [])
-        )
-        raw_episode_id = _translate_id(eps[0]["id"]) if eps else None
-        if not raw_episode_id:
-            return True  # episodes canary passed and there's nothing else we can check safely
-
         if not CANARY_CHECK_SOURCES:
             return True  # episodes canary passed and sources is deliberately not checked
 
-        sources_payload = {
-            "path": "sources",
-            "method": "GET",
-            "query": {
-                "episodeId": base64.urlsafe_b64encode(raw_episode_id.encode()).decode().rstrip("="),
-                "provider": canary_provider,
-                "category": _VERIFY_CATEGORY,
-                "anilistId": canary_anilist_id,
-                "_cb": _cache_bust(),
-            },
-            "body": None,
-            "version": "0.1.0",
-        }
-        res2 = await _pipe_call_with_429_retry(cookie_str, headers, sources_payload, verbose)
-        if verbose:
-            print(f"  -> sources:  HTTP {res2.status_code} (cf-cache-status: {res2.headers.get('cf-cache-status')})")
-        return res2.status_code == 200
+        raw = res.text.strip()
+        raw += "=" * (4 - len(raw) % 4)
+        episodes_data = json.loads(gzip.decompress(base64.urlsafe_b64decode(raw)).decode())
+        providers_data = episodes_data.get("providers", {})
+
+        # Confirmed live 2026-09-09: a single provider failing "sources" is NOT reliable proof
+        # the cookie is broken — Miruro sometimes genuinely hasn't scraped a working source for
+        # ONE specific episode+provider combo, independent of any Cloudflare/cookie problem. But
+        # confirmed the SAME day: a cookie only ~6 minutes old failed ALL SIX providers at once
+        # for the same anime — that kind of across-the-board failure is real signal. So: try
+        # several DIFFERENT providers; only conclude "doesn't work" if every one tried fails.
+        available_providers = [
+            p for p in _CANARY_PROVIDER_POOL
+            if providers_data.get(p, {}).get("episodes", {}).get(_VERIFY_CATEGORY, [])
+        ]
+        if not available_providers:
+            return True  # can't build any sources canary — episodes passing is all we can check
+
+        import random
+        random.shuffle(available_providers)
+        for provider in available_providers[:_CANARY_SOURCES_MAX_PROVIDERS_TO_TRY]:
+            raw_episode_id = _translate_id(providers_data[provider]["episodes"][_VERIFY_CATEGORY][0]["id"])
+            sources_payload = {
+                "path": "sources",
+                "method": "GET",
+                "query": {
+                    "episodeId": base64.urlsafe_b64encode(raw_episode_id.encode()).decode().rstrip("="),
+                    "provider": provider,
+                    "category": _VERIFY_CATEGORY,
+                    "anilistId": canary_anilist_id,
+                    "_cb": _cache_bust(),
+                },
+                "body": None,
+                "version": "0.1.0",
+            }
+            res2 = await _pipe_call_with_429_retry(cookie_str, headers, sources_payload, verbose)
+            if verbose:
+                print(f"  -> sources ({provider}): HTTP {res2.status_code} (cf-cache-status: {res2.headers.get('cf-cache-status')})")
+            if res2.status_code == 200:
+                return True  # at least one provider's sources worked — cookie is healthy
+        return False  # every provider tried failed
     except Exception:
         logger.exception("Verification call itself failed")
         return False
