@@ -634,19 +634,25 @@ async def _pipe_get(encoded_req: str) -> dict:
     # of XHR), not the header/cookie content — those matched byte-for-byte in every failing
     # attempt too. http2=True requires the `h2` package (see requirements.txt).
     if "cookie" in headers:
-        # A 429 (rate limited) or a 444 on "sources" (confirmed live: happens even with a
-        # genuinely working cookie — Cloudflare/Miruro flaking on that specific path, not the
-        # cookie being dead) both mean "retry before trusting this", not "cookie is broken".
-        # Only a non-{429,444} failure (403, etc.) is treated as a real signal below.
+        # A 429 (rate limited) or a 444 on "sources" CAN be transient (confirmed live: happens
+        # even with a genuinely working cookie) — but confirmed EQUALLY live 2026-09-09 that a
+        # 444 on a specific provider can also be a real, sustained failure (Miruro hasn't scraped
+        # that episode+provider, or a partial-trust cookie categorically failing that path) that
+        # does NOT clear with more waiting. The app already fires several providers in parallel
+        # and uses whichever responds first, so a slow-but-thorough retry here only makes a
+        # doomed request block that flow longer — confirmed live: 3 attempts with 2s/4s/8s
+        # backoff cost ~15s per failing provider while the real fix (trying another provider)
+        # was sitting right there. Client-facing traffic gets exactly ONE quick retry (short,
+        # fixed delay) — enough to ride out a genuinely momentary blip — then gives up fast so
+        # the app's own multi-provider fallback isn't held hostage by one bad one. The slower,
+        # more patient 3-attempt backoff stays in _cf_clearance_actually_broken's internal health
+        # check, where nothing user-facing is waiting on it.
         try:
-            delay = 2
             async with httpx.AsyncClient(timeout=20, http2=True) as client:
-                for attempt in range(3):
+                res = await client.get(url, headers=headers)
+                if res.status_code in (429, 444):
+                    await asyncio.sleep(1.5)
                     res = await client.get(url, headers=headers)
-                    if res.status_code not in (429, 444):
-                        break
-                    await asyncio.sleep(delay)
-                    delay *= 2
         except Exception:
             raise HTTPException(status_code=503, detail="Pipe unavailable")
         if res.status_code != 200:
@@ -674,13 +680,10 @@ async def _pipe_get(encoded_req: str) -> dict:
         pass
 
     try:
-        delay = 2
-        for attempt in range(3):
+        res = await pipe_session.get(url, headers=headers)
+        if res.status_code in (429, 444):
+            await asyncio.sleep(1.5)
             res = await pipe_session.get(url, headers=headers)
-            if res.status_code not in (429, 444):
-                break
-            await asyncio.sleep(delay)
-            delay *= 2
     except Exception:
         raise HTTPException(status_code=503, detail="Pipe unavailable")
     if res.status_code != 200:
