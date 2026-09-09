@@ -84,6 +84,19 @@ REDIS_KEY_NEED_FALLBACK_REFRESH = f"miruro_api:need_mac_refresh:{FALLBACK_TOPIC}
 REDIS_CHANNEL_FALLBACK_REFRESH = f"miruro_api:mac_refresh_channel:{FALLBACK_TOPIC}"
 FALLBACK_POLL_INTERVAL_SECONDS = int(os.getenv("FALLBACK_POLL_INTERVAL_SECONDS", str(30 * 60)))
 
+# Proactive spare-cookie queue (added 2026-09-09) — for --listen fallback nodes only (Mac,
+# Windows; deliberately NOT for production servers, which shouldn't spend their own CPU on
+# extra Chrome launches while serving live traffic). Every PROACTIVE_QUEUE_INTERVAL_SECONDS,
+# solves a fresh challenge and verifies it — same as a normal refresh — but NEVER overwrites an
+# already-live active cookie with it. If the active cookie is dead, promotes this one (acts like
+# a normal recovery); if the active cookie is still alive, pushes this one onto a separate queue
+# instead, so a future consumer (not built yet) can try an already-validated spare cookie instead
+# of waiting ~20-30s for a fresh browser solve when the primary cookie fails on a specific
+# request. Disabled (0) unless explicitly set — production nodes should never set this.
+PROACTIVE_QUEUE_INTERVAL_SECONDS = int(os.getenv("PROACTIVE_QUEUE_INTERVAL_SECONDS", "0"))
+PROACTIVE_QUEUE_MAX_SIZE = int(os.getenv("PROACTIVE_QUEUE_MAX_SIZE", "5"))
+REDIS_KEY_CF_CLEARANCE_QUEUE = f"miruro_api:cf_clearance:queue:{FALLBACK_TOPIC}"
+
 # Skip launching the browser entirely when the cached cookie still has plenty of life left, in
 # one-shot (non --force, non --listen) mode — cuts real Chromium/Cloudflare-challenge runs down
 # to only when actually needed.
@@ -563,6 +576,84 @@ async def _current_ttl() -> int:
 _refresh_lock = asyncio.Lock()
 
 
+async def _proactive_queue_cycle() -> None:
+    """One cycle of the proactive spare-cookie queue. Shares _refresh_lock with
+    run_refresh_once so this never launches a second Chrome while a real recovery (triggered by
+    --force or a pub/sub wake-up) is already mid-solve on this same machine."""
+    if _refresh_lock.locked():
+        logger.info("[proactive-queue] A refresh is already in progress, skipping this cycle")
+        return
+
+    async with _refresh_lock:
+        try:
+            cookie_str, headers = await _solve_challenge_and_capture()
+            if not await _cookie_actually_works(cookie_str, headers):
+                logger.info("[proactive-queue] Solved but verification failed, discarding")
+                return
+        except Exception as e:
+            logger.info("[proactive-queue] Solve failed: %s", e)
+            return
+
+        payload = {
+            "cookie": cookie_str,
+            "headers": headers,
+            "updated_at": int(time.time()),
+            "source": NODE_ID,
+        }
+        r = aioredis.Redis(
+            host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, decode_responses=True
+        )
+        try:
+            active_ttl = await r.ttl(REDIS_KEY_CF_CLEARANCE)
+            if not active_ttl or active_ttl <= 0:
+                # Active cookie is dead or missing — this acts exactly like a normal recovery
+                # (promote immediately, clear the fallback flag, report real recovery time).
+                await r.set(REDIS_KEY_CF_CLEARANCE, json.dumps(payload), ex=REDIS_TTL_SECONDS)
+                await r.delete(REDIS_KEY_NEED_FALLBACK_REFRESH)
+                break_detected_at = await r.get(REDIS_KEY_BREAK_DETECTED_AT)
+                if break_detected_at:
+                    await r.delete(REDIS_KEY_BREAK_DETECTED_AT)
+                    elapsed = time.time() - float(break_detected_at)
+                    logger.info(
+                        "[proactive-queue] Active cookie was dead — promoted new one, recovery time %.1fs",
+                        elapsed,
+                    )
+                    if NOTIFY_ON_RECOVERY:
+                        notify_telegram(
+                            f"✅ MI-API [nodo: {NODE_ID}]: recuperado (proactivo). Tiempo real "
+                            f"roto→arreglado: {elapsed:.0f}s."
+                        )
+                else:
+                    logger.info("[proactive-queue] No active cookie found — promoted new one proactively")
+            else:
+                # Active cookie is still alive — never overwrite it. Queue this one as a spare
+                # instead, capped to PROACTIVE_QUEUE_MAX_SIZE (oldest dropped first).
+                await r.rpush(REDIS_KEY_CF_CLEARANCE_QUEUE, json.dumps(payload))
+                await r.ltrim(REDIS_KEY_CF_CLEARANCE_QUEUE, -PROACTIVE_QUEUE_MAX_SIZE, -1)
+                await r.expire(REDIS_KEY_CF_CLEARANCE_QUEUE, REDIS_TTL_SECONDS)
+                logger.info(
+                    "[proactive-queue] Active cookie still alive (ttl=%ss) — queued as spare",
+                    active_ttl,
+                )
+        finally:
+            await r.aclose()
+
+
+async def _proactive_queue_loop() -> None:
+    if PROACTIVE_QUEUE_INTERVAL_SECONDS <= 0:
+        return  # disabled unless explicitly set in this machine's .env
+    logger.info(
+        "[proactive-queue] Enabled — solving a fresh cookie every %ss (queue cap %s)",
+        PROACTIVE_QUEUE_INTERVAL_SECONDS, PROACTIVE_QUEUE_MAX_SIZE,
+    )
+    while True:
+        try:
+            await _proactive_queue_cycle()
+        except Exception:
+            logger.exception("[proactive-queue] Cycle failed unexpectedly")
+        await asyncio.sleep(PROACTIVE_QUEUE_INTERVAL_SECONDS)
+
+
 async def run_refresh_once(force: bool = False, dry_run: bool = False) -> bool:
     """Core logic shared by every mode. Returns True on a verified-working refresh.
 
@@ -704,7 +795,7 @@ async def listen_forever():
         "Listening as a fallback node [%s] — poll every %ss, instant pub/sub also active",
         NODE_ID, FALLBACK_POLL_INTERVAL_SECONDS,
     )
-    await asyncio.gather(_pubsub_loop(), _poll_loop())
+    await asyncio.gather(_pubsub_loop(), _poll_loop(), _proactive_queue_loop())
 
 
 async def main():
