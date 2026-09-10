@@ -80,14 +80,30 @@ this to work reliably, both found the hard way (see `SESSION_LOG.md`, sessions 2
   first and skips (no browser launch) unless TTL < `MIN_TTL_BEFORE_REFRESH_SECONDS` (10 min) —
   cuts real Chromium/challenge-solve runs down from one per timer tick to only when actually
   needed.
-- *Reactive* (the one that matters for uptime): when a live pipe request gets a 403 with a
-  cookie set, `api.py`'s `_trigger_reactive_cf_refresh()` fires immediately — a Redis lock
-  (`miruro_api:cf_refresher:reactive_trigger_lock`, 60s TTL) de-dupes concurrent failures across
-  ALL 5 nodes into one browser launch, and `cf_refresher.py --force` (bypasses the TTL-skip
-  check) runs in the background. Recovery for subsequent requests: ~15-30s. A Redis TTL that
-  says "still valid" is **not proof the cookie actually works** (learned the hard way) — the
-  reactive path is what actually catches real breakage, the proactive timer is just cheap
+- *Reactive* (the one that matters for uptime): when a live pipe request gets a 403 **or a 444**
+  with a cookie set, `api.py`'s `_pipe_get()` fires `_trigger_reactive_cf_refresh()` via
+  `asyncio.create_task` (fire-and-forget — never blocks the real client response) — a Redis lock
+  (`miruro_api:cf_refresher:reactive_trigger_lock:{FALLBACK_TOPIC}`, 60s TTL) de-dupes concurrent
+  failures within the same group into one browser launch, and `cf_refresher.py --force` (bypasses
+  the TTL-skip check) runs in the background. Recovery for subsequent requests: ~15-30s. A Redis
+  TTL that says "still valid" is **not proof the cookie actually works** (learned the hard way) —
+  the reactive path is what actually catches real breakage, the proactive timer is just cheap
   insurance between failures.
+  - **444 was NOT part of this trigger until 2026-09-10** — a real, confirmed-live gap: a cookie
+    can stay 200 on `episodes` (still valid for Cloudflare) while `sources` 444s across EVERY
+    provider at once (a genuine break, not the normal single-provider categorical-failure noise
+    — see `CANARY_CHECK_SOURCES` below). Because the trigger only fired on 403, that scenario sat
+    broken **for hours**, silently, with zero automatic recovery attempt, zero Mac/Windows
+    fallback ping, and zero escalation alert — nothing ever even looked at it, since the whole
+    reactive chain never started. Fixed by adding 444 alongside 403 in both `_pipe_get()` branches
+    (the `httpx`/cookie path and the `curl_cffi` fallback path). Safe against false-positive
+    browser launches because `_cf_clearance_actually_broken()` — the function the trigger calls
+    first — already tries every available provider before concluding "broken"; a single
+    provider's 444 alone (the common, harmless case) still won't launch anything. Verified with
+    real, unmocked code before deploying: with the old code, a real live 444 called the trigger
+    **0 times**; with the fix, the same real 444 called it and the trigger's own real Redis
+    writes (lock, `break_detected_at`, `need_mac_refresh` flag) and real `subprocess.Popen`/
+    `publish` calls all fired as expected.
 - If the forced refresh itself fails (e.g. Cloudflare escalates to an interactive Turnstile a
   non-headless-but-still-automated browser can't solve), the service **stays down** — there's no
   further automatic fallback. A human has to solve the challenge in a real browser and hand the
