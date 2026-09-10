@@ -150,6 +150,7 @@ only real per-OS difference is "how do I find/launch a bare Chrome", not the sur
 | `--force` | One-shot, skip the TTL check — always attempt. |
 | `--listen` | Run forever as an active fallback node: Redis Pub/Sub (instant reaction) + a periodic poll (durable fallback for whenever this machine was asleep/offline when the trigger was published). Deploy this on any extra machine you want acting as a second/third/etc. `cf_clearance` source. |
 | `--dry-run` | Solve + verify only — prints PASS/FAIL against the real pipe endpoints (`episodes` then `sources`, cache-busted). Does **not** write to Redis or notify anyone. Use this to test whether a machine's IP is even viable before deciding to run it with `--listen`. |
+| `--proactive-monitor` | Run forever as its own separate process/systemd unit (`mi-api-proactive-monitor.service`, distinct from `mi-api-fallback-agent.service`): every `PROACTIVE_MONITOR_INTERVAL_SECONDS` (default 600 = 10 min), re-verifies whatever cookie is CURRENTLY in Redis with a pure HTTP check (`_cookie_actually_works` — no browser). Closes a real gap confirmed live 2026-09-10: a cookie that expires with **zero live traffic** hitting it during its whole lifetime never gets noticed by the purely-reactive path (nothing failed, so nothing triggered) — it just sits dead until someone finally makes a real request. If the check passes, does nothing. If it fails, asks the real fallback node (Mac/Windows) to regenerate it — via the same `need_mac_refresh` flag + pub/sub publish as the reactive trigger — but **deliberately never attempts a local browser solve itself**, since this is the same automation IP CLAUDE.md already warns gets progressively distrusted by Cloudflare from solving too many challenges; a proactive check firing every few minutes forever must not add to that. |
 
 **Why it needs to exist at all:** headless Chromium (plain Playwright, and `patchright`'s
 stealth fork) gets stuck on the challenge forever. Beyond that, **the browser must have ZERO
@@ -249,6 +250,12 @@ Keep it running persistently:
 - **Windows**: Task Scheduler, "run at log on", pointed at `venv\Scripts\python.exe
   cf_refresher.py --listen` with the repo as the working directory.
 
+**`--proactive-monitor` is a SEPARATE unit from the one above** — `mi-api-proactive-monitor.service`
+(same edit-placeholders-then-`sudo cp`/`daemon-reload`/`enable --now` flow). Deploy it on the same
+node that runs `api.py` for a given group (this server for `group-mac-ubuntu`, `comba-server-1`
+for `group-ubuntu-windows`) — it watches THAT group's cookie, not the fallback node's. No
+`xvfb-run` needed (it never launches a browser, just HTTP checks), unlike the other two units.
+
 Uses a dedicated, throwaway Chrome profile (`.chrome-profile/`, gitignored) rather than the
 user's live daily-driver profile — this never conflicts with them actually using Chrome at the
 same time as a refresh runs.
@@ -293,6 +300,7 @@ Episode IDs returned by the Miruro pipe are base64-encoded. `_translate_id()` de
 | `NOTIFY_RELAY_URL` | `` (empty) | Base URL of the home node (its ZeroTier address, e.g. `http://10.x.x.x:8848`), used by cloud nodes to relay Telegram alerts through `POST /internal/notify` when no local Hermes install exists. Leave unset on the home node itself. |
 | `HERMES_BIN_PATH` | `` (empty) | Absolute path to the local Hermes CLI binary. Only set on the home node's own `.env`; unset/missing anywhere else falls through to `NOTIFY_RELAY_URL`. |
 | `NODE_ID` | OS hostname | Human-readable label for this node (e.g. `cloud-1`), appended to Telegram alerts as `[nodo: ...]` so you know which of the 5 nodes actually detected the failure. |
+| `PROACTIVE_MONITOR_INTERVAL_SECONDS` | `600` (10 min) | How often `cf_refresher.py --proactive-monitor` re-verifies the currently stored cookie. Only read by that mode/service, not by `api.py`. |
 
 ### Deployment targets
 

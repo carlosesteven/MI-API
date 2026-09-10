@@ -114,6 +114,19 @@ NODE_ID = os.getenv("NODE_ID") or socket.gethostname()
 NOTIFY_ON_SOLVE_FAILURE = os.getenv("NOTIFY_ON_SOLVE_FAILURE", "false").lower() == "true"
 NOTIFY_ON_RECOVERY = os.getenv("NOTIFY_ON_RECOVERY", "false").lower() == "true"
 
+# Reuses api.py's alert type for "a break was detected" — this monitor finding a dead cookie is
+# the same kind of event, just caught by a timer instead of a real failing request.
+NOTIFY_ON_BREAK_DETECTED = os.getenv("NOTIFY_ON_BREAK_DETECTED", "false").lower() == "true"
+
+# --proactive-monitor mode: a SEPARATE, always-running process (own systemd unit, see
+# mi-api-proactive-monitor.service) that periodically re-verifies the CURRENTLY stored cookie —
+# catches the case where nothing broke it via a live request (no traffic during its whole
+# lifetime), so the purely-reactive path above never even started. Confirmed live 2026-09-10:
+# group-mac-ubuntu's cookie fully expired with zero live traffic hitting it, and sat dead with
+# no lock, no break_detected_at, no alert — reactive detection only runs when something actually
+# asks for content. Default 10 min, tunable per-node from .env without a code change.
+PROACTIVE_MONITOR_INTERVAL_SECONDS = int(os.getenv("PROACTIVE_MONITOR_INTERVAL_SECONDS", str(10 * 60)))
+
 
 def notify_telegram(message: str) -> None:
     """Best-effort — a failed notification must never crash the refresher."""
@@ -709,9 +722,66 @@ async def listen_forever():
     await asyncio.gather(_pubsub_loop(), _poll_loop())
 
 
+async def _request_fallback_regeneration(r: "aioredis.Redis") -> None:
+    """Asks the real fallback node (Mac/Windows — whichever runs --listen for this topic) to
+    regenerate the cookie. Deliberately does NOT attempt a local browser solve: this node's own
+    automation is exactly the one CLAUDE.md warns gets progressively distrusted by Cloudflare
+    from solving hundreds of challenges a day on the same IP — a proactive check firing every
+    few minutes forever must not add to that. Same flag/publish api.py's own reactive trigger
+    uses, just without the local subprocess.Popen(cf_refresher.py --force) half of it."""
+    await r.set(REDIS_KEY_BREAK_DETECTED_AT, str(time.time()), nx=True, ex=3600)
+    await r.set(REDIS_KEY_NEED_FALLBACK_REFRESH, "1", ex=600)
+    await r.publish(REDIS_CHANNEL_FALLBACK_REFRESH, "refresh")
+    if NOTIFY_ON_BREAK_DETECTED:
+        notify_telegram(
+            f"⚠️ MI-API [nodo: {NODE_ID}]: el chequeo proactivo detectó que cf_clearance "
+            f"({FALLBACK_TOPIC}) ya no funciona. Pidiendo regeneración al nodo real de "
+            "respaldo — este nodo no intenta resolverlo localmente."
+        )
+
+
+async def _proactive_monitor_loop():
+    """Separate long-running mode (own systemd unit): periodically re-verifies whatever cookie
+    is CURRENTLY stored, independent of any live pipe traffic. If it still works, does nothing —
+    if it's dead (expired, or Cloudflare revoked it early), asks the real fallback node to
+    regenerate it, same as api.py's reactive path would, but without a local solve attempt."""
+    logger.info(
+        "Monitor proactivo activo para topic %s — chequeo real cada %ss",
+        FALLBACK_TOPIC, PROACTIVE_MONITOR_INTERVAL_SECONDS,
+    )
+    r = aioredis.Redis(
+        host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, decode_responses=True
+    )
+    try:
+        while True:
+            await asyncio.sleep(PROACTIVE_MONITOR_INTERVAL_SECONDS)
+            try:
+                blob = await r.get(REDIS_KEY_CF_CLEARANCE)
+                if not blob:
+                    logger.warning("No hay ninguna cookie en Redis para este topic — pidiendo regeneración")
+                    await _request_fallback_regeneration(r)
+                    continue
+                data = json.loads(blob)
+                works = await _cookie_actually_works(data["cookie"], data["headers"])
+            except Exception:
+                logger.exception("Chequeo proactivo falló (Redis/red inalcanzable?) — reintenta en el próximo ciclo")
+                continue
+            if works:
+                logger.info("Chequeo proactivo: cookie sigue válida, no se toca")
+                continue
+            logger.warning("Chequeo proactivo: cookie ya no funciona — pidiendo regeneración al nodo real de respaldo")
+            await _request_fallback_regeneration(r)
+    finally:
+        await r.aclose()
+
+
 async def main():
     if "--listen" in sys.argv:
         await listen_forever()
+        return
+
+    if "--proactive-monitor" in sys.argv:
+        await _proactive_monitor_loop()
         return
 
     ok = await run_refresh_once(force="--force" in sys.argv, dry_run="--dry-run" in sys.argv)
