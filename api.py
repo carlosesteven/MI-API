@@ -670,8 +670,17 @@ async def _pipe_get(encoded_req: str) -> dict:
         except Exception:
             raise HTTPException(status_code=503, detail="Pipe unavailable")
         if res.status_code != 200:
-            if res.status_code == 403:
-                await _trigger_reactive_cf_refresh()
+            # A 403 always means the cookie itself is dead. But confirmed live 2026-09-10: a
+            # cookie that stays 200 on "episodes" (still valid for Cloudflare) can still 444
+            # on EVERY provider for "sources" — that's a real break too, and until now nothing
+            # ever triggered a recovery for it (only 403 did), so it sat broken silently with
+            # no reactive refresh, no Mac/Windows fallback ping, no escalation alert. Fire the
+            # same trigger for 444; _cf_clearance_actually_broken()'s own multi-provider retry
+            # logic is what actually decides if it's real (a single provider's 444 alone won't
+            # cause a false-positive browser launch). create_task instead of await — 444 is far
+            # more common than 403, and this must never add latency to the real response.
+            if res.status_code in (403, 444):
+                asyncio.create_task(_trigger_reactive_cf_refresh())
             status = res.status_code if 100 <= res.status_code <= 599 else 502
             raise HTTPException(status_code=status, detail="Pipe request failed")
         try:
@@ -702,10 +711,11 @@ async def _pipe_get(encoded_req: str) -> dict:
         raise HTTPException(status_code=503, detail="Pipe unavailable")
     if res.status_code != 200:
         # No cookie was even in Redis to try (that's what put us on this fallback path at
-        # all) — a 403 here means the same thing it does on the httpx/cookie path above:
-        # nothing usable is cached, kick a forced re-solve instead of staying down silently.
-        if res.status_code == 403:
-            await _trigger_reactive_cf_refresh()
+        # all) — a 403 or 444 here means the same thing it does on the httpx/cookie path
+        # above: nothing usable is cached/working, kick a forced re-solve instead of staying
+        # down silently. create_task — never block the real response on this.
+        if res.status_code in (403, 444):
+            asyncio.create_task(_trigger_reactive_cf_refresh())
         status = res.status_code if 100 <= res.status_code <= 599 else 502
         raise HTTPException(status_code=status, detail="Pipe request failed")
     try:
