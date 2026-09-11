@@ -134,7 +134,7 @@ PROACTIVE_MONITOR_ESCALATION_TIMEOUT_SECONDS = int(
 # the user noticed by hand. Deliberately NOT gated behind the usual opt-in NOTIFY_ON_* flags —
 # the user explicitly demanded unconditional, repeated Telegram spam while broken, since a dead
 # fallback process is worse than any amount of alert noise.
-CRASH_ALERT_INTERVAL_SECONDS = 30
+CRASH_ALERT_INTERVAL_SECONDS = int(os.getenv("CRASH_ALERT_INTERVAL_SECONDS", "30"))
 
 # --proactive-monitor mode: a SEPARATE, always-running process (own systemd unit, see
 # mi-api-proactive-monitor.service) that periodically re-verifies the CURRENTLY stored cookie —
