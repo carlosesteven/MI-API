@@ -133,6 +133,45 @@ on the receiving end — it's a normal endpoint (not in the auth-bypass list), s
 by the same `x-api-key` check as everything else. Leave `NOTIFY_RELAY_URL` unset on the home
 node; set it to `http://<home-node-zerotier-ip>:8848` on the 4 cloud nodes.
 
+### `cf_refresher.py`'s `--listen`/`--proactive-monitor` must NEVER exit — confirmed live 2026-09-11
+
+A transient `redis.exceptions.TimeoutError` inside `_pubsub_loop`'s `pubsub.listen()` propagated
+unhandled all the way up through `asyncio.gather` and killed the ENTIRE `--listen` process on
+the real Windows fallback node for `group-ubuntu-windows`. The process just exited — no crash
+loop, no alert, nothing — and the group sat with zero fallback coverage until, shortly after, its
+`cf_clearance` genuinely expired, the proactive monitor correctly detected it and asked the
+fallback to regenerate it, and **nobody answered** for ~21 minutes because the thing meant to
+answer was already dead on the floor with no one aware of it.
+
+Fixed on three layers, all confirmed live before deploying (see `SESSION_LOG.md`, 2026-09-11):
+1. **`_pubsub_loop`**: the `subscribe`/`listen` pair now lives inside its own `while True` +
+   `try/except`, never allowed to propagate. On any failure it logs, sends an unconditional
+   Telegram alert (NOT gated by any `NOTIFY_ON_*` opt-in — deliberately, per explicit user
+   demand: a dead fallback listener is worse than any amount of alert noise), sleeps
+   `CRASH_ALERT_INTERVAL_SECONDS` (30s), and retries — repeating the alert every 30s for as long
+   as it stays broken. `_poll_loop` and `_proactive_monitor_loop` got the same full-iteration
+   try/except treatment (parts of both were previously unguarded: `_poll_loop`'s
+   `run_refresh_once()` call, and `_proactive_monitor_loop`'s entire "cookie stopped working"
+   branch after its inner `try` block).
+2. **`_proactive_monitor_loop` now schedules its own escalation** (`_escalate_if_fallback_never_fixed_it`,
+   `PROACTIVE_MONITOR_ESCALATION_TIMEOUT_SECONDS` default 120s, gated by `NOTIFY_ON_ESCALATION`
+   — same flag name/intent as `api.py`'s, now also read here) — mirrors `api.py`'s
+   `_escalate_if_still_broken` exactly. This didn't exist before: `api.py`'s escalation only
+   fires from ITS OWN reactive trigger, in a totally separate process, so a break the proactive
+   monitor detects (in its own process) had nothing watching whether the fallback ever actually
+   fixed it. This is precisely how the ~21-minute silent gap happened.
+3. **Top-level supervisor** in `if __name__ == "__main__":` for `--listen`/`--proactive-monitor`:
+   wraps `asyncio.run(main())` in a `while True`/`try/except` as a last-resort net — if literally
+   anything still escapes the per-loop guards above, it logs, sends the same unconditional
+   30s-repeating Telegram alert, and restarts `main()` in a fresh event loop. Belt and suspenders
+   with layer 1 above, deliberately — the user's exact words were "no debe romperse la ejecución
+   por NADA".
+
+Verified live before deploying: forced 2 consecutive simulated Redis connection failures inside
+`_pubsub_loop` (real code, only the failure itself was injected) — the process stayed alive
+through both, sent 2 real Telegram-alert-call invocations 30s apart, and reconnected for real on
+the 3rd attempt. Never crashed.
+
 ### `cf_refresher.py` — ONE script, any OS, four modes
 
 Solves the Cloudflare challenge and refreshes `miruro_api:cf_clearance:{FALLBACK_TOPIC}`. Runs **unchanged** on
@@ -325,6 +364,7 @@ Episode IDs returned by the Miruro pipe are base64-encoded. `_translate_id()` de
 | `HERMES_BIN_PATH` | `` (empty) | Absolute path to the local Hermes CLI binary. Only set on the home node's own `.env`; unset/missing anywhere else falls through to `NOTIFY_RELAY_URL`. |
 | `NODE_ID` | OS hostname | Human-readable label for this node (e.g. `cloud-1`), appended to Telegram alerts as `[nodo: ...]` so you know which of the 5 nodes actually detected the failure. |
 | `PROACTIVE_MONITOR_INTERVAL_SECONDS` | `600` (10 min) | How often `cf_refresher.py --proactive-monitor` re-verifies the currently stored cookie. Only read by that mode/service, not by `api.py`. |
+| `PROACTIVE_MONITOR_ESCALATION_TIMEOUT_SECONDS` | `120` | How long `--proactive-monitor` waits after asking the fallback node to regenerate a dead cookie before alerting (via `NOTIFY_ON_ESCALATION`) that nobody fixed it. Mirrors `api.py`'s hardcoded `MAC_ESCALATION_TIMEOUT_SECONDS`, but as its own env var since this runs in a separate process. |
 
 ### Deployment targets
 

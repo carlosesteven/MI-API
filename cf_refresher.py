@@ -118,6 +118,24 @@ NOTIFY_ON_RECOVERY = os.getenv("NOTIFY_ON_RECOVERY", "false").lower() == "true"
 # the same kind of event, just caught by a timer instead of a real failing request.
 NOTIFY_ON_BREAK_DETECTED = os.getenv("NOTIFY_ON_BREAK_DETECTED", "false").lower() == "true"
 
+# Same flag name as api.py's NOTIFY_ON_ESCALATION (default true — the one alert meant to
+# survive). --proactive-monitor schedules its OWN escalation check (api.py's only fires from
+# its own reactive trigger, in a completely separate process — nothing was watching on behalf
+# of a break the proactive monitor itself detected until this was added 2026-09-11).
+NOTIFY_ON_ESCALATION = os.getenv("NOTIFY_ON_ESCALATION", "true").lower() == "true"
+PROACTIVE_MONITOR_ESCALATION_TIMEOUT_SECONDS = int(
+    os.getenv("PROACTIVE_MONITOR_ESCALATION_TIMEOUT_SECONDS", "120")
+)
+
+# Crash-resilience for --listen and --proactive-monitor (both meant to run forever). Confirmed
+# live 2026-09-11: a transient redis.exceptions.TimeoutError inside _pubsub_loop's
+# `pubsub.listen()` propagated all the way up through asyncio.gather and killed the ENTIRE
+# Windows --listen process — that group's fallback node sat silently dead with zero alert until
+# the user noticed by hand. Deliberately NOT gated behind the usual opt-in NOTIFY_ON_* flags —
+# the user explicitly demanded unconditional, repeated Telegram spam while broken, since a dead
+# fallback process is worse than any amount of alert noise.
+CRASH_ALERT_INTERVAL_SECONDS = 30
+
 # --proactive-monitor mode: a SEPARATE, always-running process (own systemd unit, see
 # mi-api-proactive-monitor.service) that periodically re-verifies the CURRENTLY stored cookie —
 # catches the case where nothing broke it via a live request (no traffic during its whole
@@ -683,12 +701,15 @@ async def _poll_loop():
             await asyncio.sleep(FALLBACK_POLL_INTERVAL_SECONDS)
             try:
                 needed = await r.get(REDIS_KEY_NEED_FALLBACK_REFRESH)
+                if needed:
+                    logger.info("Poll found the refresh flag set — running refresh")
+                    await run_refresh_once(force=True)
             except Exception:
-                logger.exception("Poll check failed (Redis unreachable?)")
-                continue
-            if needed:
-                logger.info("Poll found the refresh flag set — running refresh")
-                await run_refresh_once(force=True)
+                # Must NEVER let this loop die — confirmed live 2026-09-11 an unhandled
+                # exception here (or in _pubsub_loop) can kill the whole --listen process
+                # silently. run_refresh_once() is now inside this same guard too (it wasn't
+                # before — an exception there would have escaped unprotected).
+                logger.exception("Poll iteration falló (Redis inalcanzable / bug) — seguimos, nunca morimos por esto")
     finally:
         await r.aclose()
 
@@ -696,21 +717,49 @@ async def _poll_loop():
 async def _pubsub_loop():
     """--listen mode, fast path: instant reaction whenever this listener is connected at
     publish time. Pub/Sub is fire-and-forget — Redis does NOT queue messages for offline
-    subscribers — so _poll_loop above is the durable complement, not redundant."""
+    subscribers — so _poll_loop above is the durable complement, not redundant.
+
+    Must NEVER exit — confirmed live 2026-09-11: a transient redis.exceptions.TimeoutError from
+    `pubsub.listen()` propagated all the way up through asyncio.gather and killed the ENTIRE
+    --listen process on the real Windows fallback node, which then sat silently dead until the
+    user noticed by hand ~21 minutes later. Any failure here now retries forever, spamming
+    Telegram every CRASH_ALERT_INTERVAL_SECONDS (30s) for as long as it stays broken —
+    deliberately unfiltered, unlike every other alert in this file."""
     r = aioredis.Redis(
         host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, decode_responses=True
     )
-    pubsub = r.pubsub()
-    await pubsub.subscribe(REDIS_CHANNEL_FALLBACK_REFRESH)
-    logger.info("Listening on %s for instant refresh requests", REDIS_CHANNEL_FALLBACK_REFRESH)
     try:
-        async for message in pubsub.listen():
-            if message["type"] != "message":
-                continue
-            logger.info("Received instant refresh request via pub/sub")
-            await run_refresh_once(force=True)
+        while True:
+            pubsub = None
+            try:
+                pubsub = r.pubsub()
+                await pubsub.subscribe(REDIS_CHANNEL_FALLBACK_REFRESH)
+                logger.info("Listening on %s for instant refresh requests", REDIS_CHANNEL_FALLBACK_REFRESH)
+                async for message in pubsub.listen():
+                    if message["type"] != "message":
+                        continue
+                    logger.info("Received instant refresh request via pub/sub")
+                    await run_refresh_once(force=True)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "Pub/sub loop se cayó — reintentando cada %ss, el proceso NUNCA termina por esto",
+                    CRASH_ALERT_INTERVAL_SECONDS,
+                )
+                notify_telegram(
+                    f"🔴🔴 MI-API [nodo: {NODE_ID}]: el listener de respaldo (--listen, pub/sub) "
+                    f"perdió la conexión a Redis. Reintentando cada {CRASH_ALERT_INTERVAL_SECONDS}s "
+                    f"hasta reconectar — el poll cada {FALLBACK_POLL_INTERVAL_SECONDS}s sigue "
+                    "activo como respaldo mientras tanto, pero la reacción instantánea está caída."
+                )
+                if pubsub is not None:
+                    try:
+                        await pubsub.aclose()
+                    except Exception:
+                        pass
+                await asyncio.sleep(CRASH_ALERT_INTERVAL_SECONDS)
     finally:
-        await pubsub.aclose()
         await r.aclose()
 
 
@@ -750,11 +799,40 @@ async def _request_fallback_regeneration(r: "aioredis.Redis") -> None:
         )
 
 
+async def _escalate_if_fallback_never_fixed_it() -> None:
+    """Scheduled the moment --proactive-monitor detects a break and asks the fallback node to
+    fix it. Confirmed missing live 2026-09-11: api.py's own _escalate_if_still_broken only
+    fires from ITS OWN reactive trigger, in a completely separate process — nothing was ever
+    watching on behalf of a break the proactive monitor itself detected. Real consequence: the
+    Windows fallback node had crashed, the proactive monitor correctly asked it to regenerate
+    the cookie, and the group sat broken for ~21 minutes with ZERO alert until the user noticed
+    by hand. Mirrors api.py's _escalate_if_still_broken exactly. Never raises."""
+    await asyncio.sleep(PROACTIVE_MONITOR_ESCALATION_TIMEOUT_SECONDS)
+    r = aioredis.Redis(
+        host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, decode_responses=True
+    )
+    try:
+        still_broken = await r.exists(REDIS_KEY_BREAK_DETECTED_AT)
+    except Exception:
+        return  # can't tell either way — don't false-alarm on a Redis hiccup
+    finally:
+        await r.aclose()
+    if still_broken and NOTIFY_ON_ESCALATION:
+        notify_telegram(
+            f"🔴 MI-API [nodo: {NODE_ID}]: el monitor proactivo detectó una rotura en "
+            f"{FALLBACK_TOPIC} y nada la arregló en los últimos "
+            f"{PROACTIVE_MONITOR_ESCALATION_TIMEOUT_SECONDS}s. Necesito una cf_clearance manual ya."
+        )
+
+
 async def _proactive_monitor_loop():
     """Separate long-running mode (own systemd unit): periodically re-verifies whatever cookie
     is CURRENTLY stored, independent of any live pipe traffic. If it still works, does nothing —
     if it's dead (expired, or Cloudflare revoked it early), asks the real fallback node to
-    regenerate it, same as api.py's reactive path would, but without a local solve attempt."""
+    regenerate it, same as api.py's reactive path would, but without a local solve attempt.
+
+    The ENTIRE loop body is one try/except — must NEVER exit (see _pubsub_loop's docstring for
+    the real incident that made this non-negotiable)."""
     logger.info(
         "Monitor proactivo activo para topic %s — chequeo real cada %ss",
         FALLBACK_TOPIC, PROACTIVE_MONITOR_INTERVAL_SECONDS,
@@ -777,24 +855,28 @@ async def _proactive_monitor_loop():
                     }))
                     await r.ltrim(REDIS_KEY_PROACTIVE_MONITOR_BREAK_LOG, -200, -1)
                     await _request_fallback_regeneration(r)
+                    asyncio.create_task(_escalate_if_fallback_never_fixed_it())
                     continue
+
                 data = json.loads(blob)
                 works = await _cookie_actually_works(data["cookie"], data["headers"])
+
+                if works:
+                    await r.hincrby(REDIS_KEY_PROACTIVE_MONITOR_STATS, "valid_checks", 1)
+                    logger.info("Chequeo proactivo: cookie sigue válida, no se toca")
+                    continue
+
+                await r.hincrby(REDIS_KEY_PROACTIVE_MONITOR_STATS, "broken_detected", 1)
+                await r.rpush(REDIS_KEY_PROACTIVE_MONITOR_BREAK_LOG, json.dumps({
+                    "at": time.time(), "reason": "cookie_stopped_working",
+                    "interval_seconds": PROACTIVE_MONITOR_INTERVAL_SECONDS,
+                }))
+                await r.ltrim(REDIS_KEY_PROACTIVE_MONITOR_BREAK_LOG, -200, -1)
+                logger.warning("Chequeo proactivo: cookie ya no funciona — pidiendo regeneración al nodo real de respaldo")
+                await _request_fallback_regeneration(r)
+                asyncio.create_task(_escalate_if_fallback_never_fixed_it())
             except Exception:
-                logger.exception("Chequeo proactivo falló (Redis/red inalcanzable?) — reintenta en el próximo ciclo")
-                continue
-            if works:
-                await r.hincrby(REDIS_KEY_PROACTIVE_MONITOR_STATS, "valid_checks", 1)
-                logger.info("Chequeo proactivo: cookie sigue válida, no se toca")
-                continue
-            await r.hincrby(REDIS_KEY_PROACTIVE_MONITOR_STATS, "broken_detected", 1)
-            await r.rpush(REDIS_KEY_PROACTIVE_MONITOR_BREAK_LOG, json.dumps({
-                "at": time.time(), "reason": "cookie_stopped_working",
-                "interval_seconds": PROACTIVE_MONITOR_INTERVAL_SECONDS,
-            }))
-            await r.ltrim(REDIS_KEY_PROACTIVE_MONITOR_BREAK_LOG, -200, -1)
-            logger.warning("Chequeo proactivo: cookie ya no funciona — pidiendo regeneración al nodo real de respaldo")
-            await _request_fallback_regeneration(r)
+                logger.exception("Chequeo proactivo falló (Redis/red inalcanzable?) — reintenta en el próximo ciclo, nunca morimos por esto")
     finally:
         await r.aclose()
 
@@ -814,4 +896,35 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    _PERSISTENT_MODES = ("--listen", "--proactive-monitor")
+    if any(m in sys.argv for m in _PERSISTENT_MODES):
+        # Last-resort safety net, on top of the per-loop guards inside listen_forever()/
+        # _proactive_monitor_loop() themselves. Confirmed live 2026-09-11: an unhandled
+        # exception escaping those loops kills asyncio.run(main()) and the process exits —
+        # systemd would eventually restart the unit, but silently, with no alert, and only
+        # after RestartSec — not good enough for something meant to run forever. This
+        # supervisor catches literally anything that still gets through, alerts, waits
+        # CRASH_ALERT_INTERVAL_SECONDS (30s), and restarts main() in a fresh event loop —
+        # repeating the alert every 30s for as long as it keeps failing immediately.
+        while True:
+            try:
+                asyncio.run(main())
+                break  # these modes never return normally except via KeyboardInterrupt
+            except KeyboardInterrupt:
+                break
+            except Exception:
+                logger.exception(
+                    "El proceso persistente (%s) murió por una excepción no capturada — "
+                    "NO debería pasar nunca, reintentando en %ss",
+                    " ".join(a for a in sys.argv if a.startswith("--")),
+                    CRASH_ALERT_INTERVAL_SECONDS,
+                )
+                notify_telegram(
+                    f"🔴🔴🔴 MI-API [nodo: {NODE_ID}]: el proceso persistente de cf_refresher.py "
+                    f"({' '.join(a for a in sys.argv if a.startswith('--'))}) SE CAYÓ por una "
+                    f"excepción no manejada. Reintentando cada {CRASH_ALERT_INTERVAL_SECONDS}s "
+                    "hasta que vuelva a levantar."
+                )
+                time.sleep(CRASH_ALERT_INTERVAL_SECONDS)
+    else:
+        asyncio.run(main())
