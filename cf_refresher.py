@@ -722,6 +722,16 @@ async def listen_forever():
     await asyncio.gather(_pubsub_loop(), _poll_loop())
 
 
+# Durable stats for --proactive-monitor, so its real hit rate can be checked later without
+# depending on journald (which rotates/purges — not a real record). A hash of running counters
+# plus a capped list of every real break-detection timestamp, so "how often did it actually find
+# something broken, and when" can be answered directly from Redis at any point, e.g. to compare
+# behavior across a PROACTIVE_MONITOR_INTERVAL_SECONDS change (10min vs 15min) with real numbers
+# instead of re-reading logs that may no longer exist.
+REDIS_KEY_PROACTIVE_MONITOR_STATS = f"miruro_api:proactive_monitor:stats:{FALLBACK_TOPIC}"
+REDIS_KEY_PROACTIVE_MONITOR_BREAK_LOG = f"miruro_api:proactive_monitor:break_log:{FALLBACK_TOPIC}"
+
+
 async def _request_fallback_regeneration(r: "aioredis.Redis") -> None:
     """Asks the real fallback node (Mac/Windows — whichever runs --listen for this topic) to
     regenerate the cookie. Deliberately does NOT attempt a local browser solve: this node's own
@@ -756,9 +766,16 @@ async def _proactive_monitor_loop():
         while True:
             await asyncio.sleep(PROACTIVE_MONITOR_INTERVAL_SECONDS)
             try:
+                await r.hincrby(REDIS_KEY_PROACTIVE_MONITOR_STATS, "total_checks", 1)
                 blob = await r.get(REDIS_KEY_CF_CLEARANCE)
                 if not blob:
                     logger.warning("No hay ninguna cookie en Redis para este topic — pidiendo regeneración")
+                    await r.hincrby(REDIS_KEY_PROACTIVE_MONITOR_STATS, "broken_detected", 1)
+                    await r.rpush(REDIS_KEY_PROACTIVE_MONITOR_BREAK_LOG, json.dumps({
+                        "at": time.time(), "reason": "no_cookie_in_redis",
+                        "interval_seconds": PROACTIVE_MONITOR_INTERVAL_SECONDS,
+                    }))
+                    await r.ltrim(REDIS_KEY_PROACTIVE_MONITOR_BREAK_LOG, -200, -1)
                     await _request_fallback_regeneration(r)
                     continue
                 data = json.loads(blob)
@@ -767,8 +784,15 @@ async def _proactive_monitor_loop():
                 logger.exception("Chequeo proactivo falló (Redis/red inalcanzable?) — reintenta en el próximo ciclo")
                 continue
             if works:
+                await r.hincrby(REDIS_KEY_PROACTIVE_MONITOR_STATS, "valid_checks", 1)
                 logger.info("Chequeo proactivo: cookie sigue válida, no se toca")
                 continue
+            await r.hincrby(REDIS_KEY_PROACTIVE_MONITOR_STATS, "broken_detected", 1)
+            await r.rpush(REDIS_KEY_PROACTIVE_MONITOR_BREAK_LOG, json.dumps({
+                "at": time.time(), "reason": "cookie_stopped_working",
+                "interval_seconds": PROACTIVE_MONITOR_INTERVAL_SECONDS,
+            }))
+            await r.ltrim(REDIS_KEY_PROACTIVE_MONITOR_BREAK_LOG, -200, -1)
             logger.warning("Chequeo proactivo: cookie ya no funciona — pidiendo regeneración al nodo real de respaldo")
             await _request_fallback_regeneration(r)
     finally:

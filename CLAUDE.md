@@ -150,7 +150,31 @@ only real per-OS difference is "how do I find/launch a bare Chrome", not the sur
 | `--force` | One-shot, skip the TTL check — always attempt. |
 | `--listen` | Run forever as an active fallback node: Redis Pub/Sub (instant reaction) + a periodic poll (durable fallback for whenever this machine was asleep/offline when the trigger was published). Deploy this on any extra machine you want acting as a second/third/etc. `cf_clearance` source. |
 | `--dry-run` | Solve + verify only — prints PASS/FAIL against the real pipe endpoints (`episodes` then `sources`, cache-busted). Does **not** write to Redis or notify anyone. Use this to test whether a machine's IP is even viable before deciding to run it with `--listen`. |
-| `--proactive-monitor` | Run forever as its own separate process/systemd unit (`mi-api-proactive-monitor.service`, distinct from `mi-api-fallback-agent.service`): every `PROACTIVE_MONITOR_INTERVAL_SECONDS` (default 600 = 10 min), re-verifies whatever cookie is CURRENTLY in Redis with a pure HTTP check (`_cookie_actually_works` — no browser). Closes a real gap confirmed live 2026-09-10: a cookie that expires with **zero live traffic** hitting it during its whole lifetime never gets noticed by the purely-reactive path (nothing failed, so nothing triggered) — it just sits dead until someone finally makes a real request. If the check passes, does nothing. If it fails, asks the real fallback node (Mac/Windows) to regenerate it — via the same `need_mac_refresh` flag + pub/sub publish as the reactive trigger — but **deliberately never attempts a local browser solve itself**, since this is the same automation IP CLAUDE.md already warns gets progressively distrusted by Cloudflare from solving too many challenges; a proactive check firing every few minutes forever must not add to that. |
+| `--proactive-monitor` | Run forever as its own separate process/systemd unit (`mi-api-proactive-monitor.service`, distinct from `mi-api-fallback-agent.service`): every `PROACTIVE_MONITOR_INTERVAL_SECONDS` (default 600 = 10 min, raised to 900 = 15 min on 2026-09-11 — see below), re-verifies whatever cookie is CURRENTLY in Redis with a pure HTTP check (`_cookie_actually_works` — no browser). Closes a real gap confirmed live 2026-09-10: a cookie that expires with **zero live traffic** hitting it during its whole lifetime never gets noticed by the purely-reactive path (nothing failed, so nothing triggered) — it just sits dead until someone finally makes a real request. If the check passes, does nothing. If it fails, asks the real fallback node (Mac/Windows) to regenerate it — via the same `need_mac_refresh` flag + pub/sub publish as the reactive trigger — but **deliberately never attempts a local browser solve itself**, since this is the same automation IP CLAUDE.md already warns gets progressively distrusted by Cloudflare from solving too many challenges; a proactive check firing every few minutes forever must not add to that. |
+
+**Durable stats, so its real hit rate can be checked later without depending on `journalctl`**
+(which rotates/purges — not a real record): `miruro_api:proactive_monitor:stats:{FALLBACK_TOPIC}`
+(a Redis hash — `total_checks`, `valid_checks`, `broken_detected`) and
+`miruro_api:proactive_monitor:break_log:{FALLBACK_TOPIC}` (a capped list of every real break
+detection, each entry `{at, reason, interval_seconds}` — `reason` is `no_cookie_in_redis` or
+`cookie_stopped_working`, and `interval_seconds` records what the cadence was AT THAT MOMENT, so
+a cadence change (e.g. 10min → 15min) can be compared using real before/after data instead of
+re-reading logs that may no longer exist by the time you go looking).
+
+**Interval tuning (2026-09-11):** first 5 real break-lifetime samples (measured by the reactive
+path, `REDIS_KEY_COOKIE_LIFETIME_SAMPLES`) were `220s, 250s, 1370s, 1252s, 505s` — quite spread
+out. Raised from 10 to 15 min (`PROACTIVE_MONITOR_INTERVAL_SECONDS=900`) since 4 of 5 samples are
+under 15 min; 20 min was considered and rejected (one sample, 1370s ≈ 22.8 min, would exceed it).
+Caveat worth remembering if this gets revisited: those reactive-path samples are almost
+certainly biased short — live traffic samples far more often than a 10-15 min proactive check,
+so it catches brief all-provider Miruro-backend blips (not real sustained Cloudflare-level cookie
+death) that a periodic monitor would almost always miss entirely — which is consistent with the
+proactive monitor finding the cookie broken in only ~1 of ~20 combined cycles across both groups
+in its first ~10 hours running. Decided to validate the interval change with real data (the
+counters above) rather than deliberately breaking the production cookie to force more samples —
+that specific destructive test was tried and blocked twice by Claude Code's safety classifier
+(see `SESSION_LOG.md`, 2026-09-10) and wasn't worth pursuing further for a tuning decision this
+minor.
 
 **Why it needs to exist at all:** headless Chromium (plain Playwright, and `patchright`'s
 stealth fork) gets stuck on the challenge forever. Beyond that, **the browser must have ZERO
