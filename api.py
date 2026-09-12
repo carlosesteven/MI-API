@@ -265,9 +265,13 @@ HERMES_BIN = os.getenv("HERMES_BIN_PATH", "")
 # main() (reads/clears it and reports the actual elapsed seconds on successful recovery).
 REDIS_KEY_BREAK_DETECTED_AT = f"miruro_api:cf_refresher:break_detected_at:{FALLBACK_TOPIC}"
 
-# How long a cookie actually lasted before this group's traffic hit a real 403 — the fixed
-# 25-min REDIS_TTL_SECONDS cap in cf_refresher.py says nothing about how long a cookie is
-# ACTUALLY good for; a cookie can (and does) die well before that. Recorded once per detected
+# How long a cookie actually lasted before this group's traffic hit a real 403 — cf_refresher.py
+# used to write this key with a fixed 25-min Redis TTL cap, which said nothing about how long a
+# cookie was ACTUALLY good for (a cookie can die well before that, or keep working past it) and
+# was removed 2026-09-11 as a real design flaw: an arbitrary self-destruct clock unrelated to
+# actual validity. The cookie now persists until something real replaces it; THIS measurement —
+# real elapsed time until a real request confirms it's dead — is the only meaningful "lifetime"
+# there ever was. Recorded once per detected
 # outage (gated by the same CF_REFRESHER_TRIGGER_LOCK_KEY dedup as everything else here) so a
 # real average can inform a future proactive-refresh interval instead of guessing. Per
 # FALLBACK_TOPIC group — different groups' IPs may behave differently.

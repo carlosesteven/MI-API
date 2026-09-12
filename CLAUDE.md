@@ -76,10 +76,10 @@ this to work reliably, both found the hard way (see `SESSION_LOG.md`, sessions 2
 
 **Keeping the cookie fresh — two triggers, not one:**
 - *Proactive*: `cf_refresher.py` is meant to run on a timer (`mi-api-cf-refresh.timer`/`.service`,
-  **not yet installed** as of 2026-09-07 — see SESSION_LOG). It checks the cookie's Redis TTL
-  first and skips (no browser launch) unless TTL < `MIN_TTL_BEFORE_REFRESH_SECONDS` (10 min) —
-  cuts real Chromium/challenge-solve runs down from one per timer tick to only when actually
-  needed.
+  **not yet installed** as of 2026-09-07 — see SESSION_LOG). It checks the cookie's real AGE
+  (`updated_at` in the stored blob, not a Redis TTL — see below) first and skips (no browser
+  launch) unless it's older than `MIN_REFRESH_AGE_SECONDS` (10 min) — cuts real Chromium/
+  challenge-solve runs down from one per timer tick to only when actually useful.
 - *Reactive* (the one that matters for uptime): when a live pipe request gets a 403 **or a 444**
   with a cookie set, `api.py`'s `_pipe_get()` fires `_trigger_reactive_cf_refresh()` via
   `asyncio.create_task` (fire-and-forget — never blocks the real client response) — a Redis lock
@@ -121,6 +121,40 @@ this to work reliably, both found the hard way (see `SESSION_LOG.md`, sessions 2
   still running old code (no flag check at all) keeps sending every type unconditionally
   regardless of what any other node's `.env` says, since the gating logic itself has to be
   present in the code it's running.
+
+### The `cf_clearance` cookie key had a real design flaw: it self-destructed on a fixed 25-min clock
+
+Until 2026-09-11, `cf_refresher.py` wrote `miruro_api:cf_clearance:{FALLBACK_TOPIC}` with a hard
+Redis TTL (`ex=25*60`) — meaning Redis itself would delete the key 25 minutes after it was last
+written, **completely independent of whether the cookie actually still worked**. The user
+correctly called this out as bad design: an arbitrary self-destruct timer has nothing to do with
+real validity, which the project already has a proper way to check (`_cookie_actually_works()`/
+`_cf_clearance_actually_broken()` — real HTTP calls against the pipe). A cookie that was still
+perfectly good at the 25-minute mark got thrown away anyway; a cookie that died at minute 3 sat
+in Redis, looking "valid" by TTL, for another 22 minutes.
+
+**Fixed: the key now has no expiry at all.** It persists in Redis forever until something REAL
+replaces it — a verified-broken check triggering a fresh solve (reactive 403/444,
+`--proactive-monitor` finding it dead), or a routine/manual refresh. It never vanishes on its
+own clock. Consequences of this fix, all handled:
+- `cf_refresher.py`'s "none" mode (one-shot, skip-if-fresh) used to decide whether to bother
+  solving by checking the Redis key's remaining TTL (`_current_ttl()`, `MIN_TTL_BEFORE_REFRESH_SECONDS`).
+  With no TTL to read, this is now based on the cookie's own real AGE (`updated_at` in the stored
+  JSON blob) instead — renamed `_current_cookie_age_seconds()` / `MIN_REFRESH_AGE_SECONDS` (still
+  10 min default). This was always just an efficiency optimization (don't re-solve something
+  solved 2 minutes ago), never a correctness mechanism — actual validity was, and still is,
+  decided entirely by the real HTTP checks, never by this age cutoff.
+- `mi_api_mcp.py`'s `estado_cf_clearance()` diagnostic tool dropped the now-meaningless
+  `ttl_restante_seg` field (would always read -1 with no expiry) in favor of `hay_cookie` +
+  `actualizado_hace_seg` (real age).
+- `api.py`'s `REDIS_KEY_COOKIE_LIFETIME_SAMPLES` measurement (real elapsed time from write to a
+  confirmed-dead request) was already the honest metric here — it never depended on the Redis
+  TTL, only got its explanatory comment updated to stop referencing the now-removed 25-min cap.
+
+**This does NOT replace the `--proactive-monitor`/reactive-detection work above** — a cookie that
+Cloudflare has actually revoked still needs a real check to catch it; removing the Redis TTL only
+stops the system from throwing away a cookie for no real reason. Both fixes are complementary:
+this one stops false deaths, the earlier ones catch real ones faster.
 
 ### `NOTIFY_RELAY_URL` — Telegram alerts from the 4 cloud nodes
 

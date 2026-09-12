@@ -67,9 +67,12 @@ REDIS_PASSWORD = os.getenv("REDIS_PASSWORD") or None
 # "default" so a single-group deployment (the common case) needs nothing set.
 FALLBACK_TOPIC = os.getenv("FALLBACK_TOPIC", "default")
 REDIS_KEY_CF_CLEARANCE = f"miruro_api:cf_clearance:{FALLBACK_TOPIC}"
-REDIS_TTL_SECONDS = 25 * 60  # safety net: if nothing refreshes it in time, api.py falls back to
-                              # its static headers (no cookie) once this expires, rather than
-                              # replaying a stale, already-invalid cookie forever.
+# NO Redis TTL on this key (removed 2026-09-11) — it used to self-destruct after a fixed 25min
+# regardless of whether the cookie actually still worked, a real design flaw the user correctly
+# called out: an arbitrary clock deciding "this is dead now" has nothing to do with whether
+# Cloudflare actually revoked it. The cookie now persists FOREVER in Redis until something REAL
+# replaces it — a verified-broken check (reactive 403/444, --proactive-monitor) triggering a
+# fresh solve, or a routine refresh. Never vanishes on its own.
 
 # Same literal key as api.py's _trigger_reactive_cf_refresh — set there the moment a break is
 # first detected, consumed here on successful recovery to log/report the REAL, measured
@@ -84,10 +87,13 @@ REDIS_KEY_NEED_FALLBACK_REFRESH = f"miruro_api:need_mac_refresh:{FALLBACK_TOPIC}
 REDIS_CHANNEL_FALLBACK_REFRESH = f"miruro_api:mac_refresh_channel:{FALLBACK_TOPIC}"
 FALLBACK_POLL_INTERVAL_SECONDS = int(os.getenv("FALLBACK_POLL_INTERVAL_SECONDS", str(30 * 60)))
 
-# Skip launching the browser entirely when the cached cookie still has plenty of life left, in
+# Skip launching the browser entirely when the cached cookie was refreshed very recently, in
 # one-shot (non --force, non --listen) mode — cuts real Chromium/Cloudflare-challenge runs down
-# to only when actually needed.
-MIN_TTL_BEFORE_REFRESH_SECONDS = 10 * 60
+# to only when actually useful. Based on the cookie's own real AGE (`updated_at`) now, not a
+# Redis TTL (see REDIS_KEY_CF_CLEARANCE above) — this is purely an efficiency optimization
+# (don't re-solve something solved 2 minutes ago), never a correctness/safety mechanism; actual
+# validity is always decided by real checks (_cookie_actually_works), not by this age cutoff.
+MIN_REFRESH_AGE_SECONDS = 10 * 60
 
 # No debounce on the failure alert — this is a critical service with apps depending on it, and
 # the user explicitly wants a message every time this fires until it's fixed. In practice that's
@@ -583,14 +589,29 @@ async def _solve_challenge_and_capture():
                 pass
 
 
-async def _current_ttl() -> int:
+async def _current_cookie_age_seconds() -> "int | None":
+    """Real age since the currently stored cookie was last refreshed, read from its own
+    `updated_at` field — NOT from a Redis key TTL. The cookie key itself has no expiry (see
+    REDIS_TTL_SECONDS' removal, 2026-09-11): an arbitrary self-destruct timer completely
+    decoupled from whether the cookie actually still works was a real design flaw — the cookie
+    should persist until something REAL replaces it (a verified-broken check, or a fresh solve),
+    never vanish on its own clock. Returns None if there's no cookie stored at all."""
     r = aioredis.Redis(
         host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, decode_responses=True
     )
     try:
-        return await r.ttl(REDIS_KEY_CF_CLEARANCE)
+        blob = await r.get(REDIS_KEY_CF_CLEARANCE)
     finally:
         await r.aclose()
+    if not blob:
+        return None
+    try:
+        updated_at = json.loads(blob).get("updated_at")
+    except Exception:
+        return None
+    if not updated_at:
+        return None
+    return int(time.time() - updated_at)
 
 
 _refresh_lock = asyncio.Lock()
@@ -608,9 +629,9 @@ async def run_refresh_once(force: bool = False, dry_run: bool = False) -> bool:
 
     async with _refresh_lock:
         if not dry_run and not force:
-            ttl = await _current_ttl()
-            if ttl and ttl > MIN_TTL_BEFORE_REFRESH_SECONDS:
-                print(f"[cf_refresher] SKIP — cookie still has {ttl}s left (> {MIN_TTL_BEFORE_REFRESH_SECONDS}s margin)")
+            age = await _current_cookie_age_seconds()
+            if age is not None and age < MIN_REFRESH_AGE_SECONDS:
+                print(f"[cf_refresher] SKIP — cookie was refreshed {age}s ago (< {MIN_REFRESH_AGE_SECONDS}s margin)")
                 return False
 
         failure_reason = None
@@ -645,8 +666,8 @@ async def run_refresh_once(force: bool = False, dry_run: bool = False) -> bool:
 
         if failure_reason:
             print(f"[cf_refresher] FAILED after {MAX_SOLVE_ATTEMPTS} attempts: {failure_reason}", file=sys.stderr)
-            ttl = await _current_ttl()
-            vigencia = f"la cookie actual vence en ~{ttl // 60} min" if ttl and ttl > 0 else "no hay ninguna cookie vigente en este momento"
+            age = await _current_cookie_age_seconds()
+            vigencia = f"la cookie actual tiene ~{age // 60} min de antigüedad (sigue en Redis, no vence sola)" if age is not None else "no hay ninguna cookie en Redis en este momento"
             if NOTIFY_ON_SOLVE_FAILURE:
                 notify_telegram(
                     f"⚠️ MI-API [nodo: {NODE_ID}]: no logré una cookie que funcione de verdad tras "
@@ -666,7 +687,7 @@ async def run_refresh_once(force: bool = False, dry_run: bool = False) -> bool:
             host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, decode_responses=True
         )
         try:
-            await r.set(REDIS_KEY_CF_CLEARANCE, json.dumps(payload), ex=REDIS_TTL_SECONDS)
+            await r.set(REDIS_KEY_CF_CLEARANCE, json.dumps(payload))  # no ex= — persists until replaced by a real refresh, never self-expires
             await r.delete(REDIS_KEY_NEED_FALLBACK_REFRESH)
             break_detected_at = await r.get(REDIS_KEY_BREAK_DETECTED_AT)
             if break_detected_at:

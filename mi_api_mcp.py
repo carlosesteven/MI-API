@@ -46,26 +46,26 @@ mcp = FastMCP("mi-api")
 
 @mcp.tool()
 async def estado_cf_clearance() -> dict:
-    """Chequea si hay un cf_clearance vigente para el pipe de Miruro y hace cuánto se
-    actualizó. Si no hay ninguno (o está por vencer), el pipe (/episodes, /watch,
-    /recent-episodes) va a estar devolviendo 403 hasta que se refresque."""
+    """Chequea si hay un cf_clearance guardado para el pipe de Miruro y hace cuánto se
+    actualizó. La key ya NO tiene TTL propio (removido 2026-09-11 — un vencimiento arbitrario
+    de reloj no tenía nada que ver con si la cookie realmente seguía funcionando): persiste en
+    Redis hasta que algo la reemplace de verdad. Esto solo reporta antigüedad, no vigencia real
+    — para saber si de verdad sirve hay que probarla contra el pipe."""
     r = aioredis.Redis(
         host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, decode_responses=True
     )
     try:
-        ttl = await r.ttl(REDIS_KEY_CF_CLEARANCE)
         raw = await r.get(REDIS_KEY_CF_CLEARANCE)
     finally:
         await r.aclose()
 
     if not raw:
-        return {"vigente": False, "detalle": "No hay ningún cf_clearance guardado en Redis."}
+        return {"hay_cookie": False, "detalle": "No hay ningún cf_clearance guardado en Redis."}
 
     data = json.loads(raw)
     edad_seg = int(time.time()) - data.get("updated_at", 0)
     return {
-        "vigente": True,
-        "ttl_restante_seg": ttl,
+        "hay_cookie": True,
         "actualizado_hace_seg": edad_seg,
         "fuente": data.get("source"),
     }
