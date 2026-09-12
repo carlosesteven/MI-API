@@ -581,7 +581,13 @@ async def _trigger_reactive_cf_refresh() -> None:
             stale_updated_at = json.loads(stale_blob).get("updated_at")
             if stale_updated_at:
                 lifetime_seconds = time.time() - stale_updated_at
-                await redis_client.rpush(REDIS_KEY_COOKIE_LIFETIME_SAMPLES, lifetime_seconds)
+                # Timestamped (added 2026-09-12) — the old bare-number format had no way to tell
+                # which samples happened before vs. after a given change (e.g. the 25min TTL
+                # removal), unlike the proactive monitor's own break_log. Nothing else in the
+                # codebase parses this list (grepped before changing the format), so this is safe.
+                await redis_client.rpush(REDIS_KEY_COOKIE_LIFETIME_SAMPLES, json.dumps({
+                    "at": time.time(), "lifetime_seconds": lifetime_seconds,
+                }))
                 await redis_client.ltrim(REDIS_KEY_COOKIE_LIFETIME_SAMPLES, -50, -1)
                 await redis_client.expire(REDIS_KEY_COOKIE_LIFETIME_SAMPLES, 30 * 24 * 3600)
     except Exception:
