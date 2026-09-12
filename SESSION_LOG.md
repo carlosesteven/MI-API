@@ -523,3 +523,18 @@ El usuario reportó que Windows se había caído. Validación en vivo: `group-ub
 **Validado con código real antes de subir:** se forzaron 2 fallos de conexión simulados seguidos dentro de `_pubsub_loop` (solo el fallo fue inyectado, el resto es código real) — el proceso siguió vivo durante los dos fallos, mandó la alerta 2 veces (una por fallo, cada 30s) y se reconectó de verdad al canal real al tercer intento.
 
 **Pendiente:** desplegar este fix en los 3 nodos reales (este servidor, `comba-server-1`, Windows) y reiniciar los procesos `--listen`/`--proactive-monitor` correspondientes en cada uno.
+
+### Preguntando por qué el monitor solo era "útil" 8 de ~198 veces, se descubrió un diseño defectuoso: la cookie se autodestruía sola cada 25 minutos
+
+Tras revisar el desglose de `break_log` (8 roturas reales en >24h combinadas, todas `no_cookie_in_redis`), el usuario preguntó por qué la key de la cookie tiene una lógica que la borra sola a los 25 minutos — señalando correctamente que la cookie **nunca debería desaparecer arbitrariamente**, solo actualizarse cuando de verdad se confirme que ya no sirve.
+
+Investigado: `cf_refresher.py` escribía la cookie con `r.set(..., ex=25*60)` — un TTL de Redis fijo, completamente independiente de si la cookie seguía funcionando. Una cookie sana a los 25 minutos se borraba igual; una muerta a los 3 minutos parecía "vigente" por 22 minutos más. Confirmado como diseño defectuoso real, no una decisión necesaria — el proyecto ya tiene una forma real de saber si la cookie sirve (`_cookie_actually_works`/`_cf_clearance_actually_broken`, chequeos HTTP reales), así que un reloj arbitrario de Redis no aportaba nada más que roturas falsas.
+
+**Fix:** se quitó el `ex=` del `r.set(...)` — la key ahora persiste en Redis para siempre, hasta que algo real la reemplace (un chequeo que confirme que está rota, disparando un solve nuevo; o un refresh rutinario/manual). Nunca desaparece sola. La lógica de "saltar el refresh si está reciente" del modo `(sin args)` de `cf_refresher.py` (que dependía del TTL de Redis vía `_current_ttl()`/`MIN_TTL_BEFORE_REFRESH_SECONDS`) se reescribió para usar la antigüedad REAL de la cookie (`updated_at` guardado en el propio JSON) en vez del TTL — nueva `_current_cookie_age_seconds()`/`MIN_REFRESH_AGE_SECONDS`, dejando claro que esto siempre fue solo una optimización de eficiencia, nunca un mecanismo de corrección. `mi_api_mcp.py` también se actualizó (quitó el campo `ttl_restante_seg`, ya sin sentido).
+
+**Validado con código real antes de subir, en 3 partes:**
+1. Se forzó un refresco real (`cf_refresher.py --force`, navegador real) y se confirmó con Redis directo que la key quedó con TTL `-1` (sin expiración).
+2. Se confirmó que `_current_cookie_age_seconds()` reporta la antigüedad real (`10s` justo después de refrescar).
+3. A pedido explícito del usuario ("seguridad al 100%? se mantiene el aislamiento entre grupos?"), se auditó: ningún `.delete()` sobre esa key en ningún archivo, política de Redis `maxmemory-policy: noeviction` / `maxmemory: 0` (no la va a desalojar por memoria), y las 3 definiciones de la key (`api.py`, `cf_refresher.py`, `mi_api_mcp.py`) siguen usando `f"...{FALLBACK_TOPIC}"` — aislamiento entre grupos intacto. Único caveat honesto: un reinicio del propio proceso de Redis podría perder hasta ~15 min de cambios recientes (snapshotting RDB cada 15 min), pero eso es infraestructura general de Redis, no algo que este fix deba resolver.
+
+**Pendiente:** desplegar en los 3 nodos reales (este servidor, `comba-server-1`, Windows/Mac) — `git pull` + reiniciar `mi-api-proactive-monitor.service` (este servidor y `comba-server-1`) y el proceso `cf_refresher.py --listen` (Windows y Mac). No requiere cambios de `.env` en ningún nodo.
